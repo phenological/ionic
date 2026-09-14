@@ -626,8 +626,8 @@ pub(crate) fn compress_bytes_if_enabled(bytes: Vec<u8>, level: u8) -> Vec<u8> {
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 pub(crate) fn compress_bytes_if_enabled(bytes: Vec<u8>, level: u8) -> Vec<u8> {
     if level == 0 {
-        bytes
-    } else {
-        panic!("zstd compression is not available in browser wasm")
+        return bytes;
     }
+    let ruzstd_level = super::block_writer::get_ruzstd_level(level as i32);
+    ruzstd::encoding::compress_to_vec(bytes.as_slice(), ruzstd_level)
 }

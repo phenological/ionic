@@ -162,12 +162,6 @@ pub(crate) fn allow_compression_level(compression_level: u8) -> IonResult<()> {
     if compression_level > 22 {
         return Err(format!("compression_level must be 0-22, got {compression_level}").into());
     }
-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-    if compression_level != 0 {
-        return Err(IonError::from(
-            "zstd compression is not available in browser wasm",
-        ));
-    }
     Ok(())
 }
 
