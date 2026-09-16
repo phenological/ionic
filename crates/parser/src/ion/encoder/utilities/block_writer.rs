@@ -57,9 +57,7 @@ pub(crate) struct DefaultCompressor {
 }
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-pub(crate) struct DefaultCompressor {
-    level: ruzstd::encoding::CompressionLevel,
-}
+pub(crate) struct DefaultCompressor;
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 impl DefaultCompressor {
@@ -74,19 +72,8 @@ impl DefaultCompressor {
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 impl DefaultCompressor {
-    pub(crate) fn new(compression_level: i32) -> IonResult<Self> {
-        Ok(Self {
-            level: get_ruzstd_level(compression_level),
-        })
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-pub(crate) fn get_ruzstd_level(compression_level: i32) -> ruzstd::encoding::CompressionLevel {
-    if compression_level == 0 {
-        ruzstd::encoding::CompressionLevel::Uncompressed
-    } else {
-        ruzstd::encoding::CompressionLevel::Fastest
+    pub(crate) fn new(_compression_level: i32) -> IonResult<Self> {
+        Ok(Self)
     }
 }
 
@@ -112,9 +99,14 @@ impl BlockCompressor for DefaultCompressor {
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 impl BlockCompressor for DefaultCompressor {
     fn compress(&mut self, input: &[u8], output: &mut Vec<u8>) -> IonResult<usize> {
+        let options = osmo::CompressOptions::zstd();
         output.clear();
-        ruzstd::encoding::compress(input, &mut *output, self.level);
-        Ok(output.len())
+        output.resize(osmo::get_max_compressed_size(input.len(), &options), 0);
+        let mut workspace = osmo::EncodeWorkspace::new_boxed();
+        let written = osmo::compress(input, output, &options, &mut workspace)
+            .map_err(|err| IonError::from(format!("zstd encode failed: {err:?}")))?;
+        output.truncate(written);
+        Ok(written)
     }
 
     fn shuffle_bytes_into(&self, input: &[u8], output: &mut [u8], element_stride: usize) {

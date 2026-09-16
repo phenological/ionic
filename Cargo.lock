@@ -431,10 +431,10 @@ dependencies = [
  "memmap2",
  "miniz_oxide",
  "once_cell",
+ "osmo",
  "proptest",
  "quick-xml",
  "rayon",
- "ruzstd",
  "serde",
  "serde_json",
  "sha1",
@@ -543,6 +543,11 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "osmo"
+version = "0.1.0"
+source = "git+https://github.com/josoriom/osmo.git?rev=bccc1d16805ac446e2c32294d69a0090a2b85181#bccc1d16805ac446e2c32294d69a0090a2b85181"
 
 [[package]]
 name = "pkg-config"
@@ -766,15 +771,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ruzstd"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
-dependencies = [
- "twox-hash",
-]
-
-[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -893,12 +889,6 @@ name = "toml_write"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
-
-[[package]]
-name = "twox-hash"
-version = "2.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
 name = "typenum"

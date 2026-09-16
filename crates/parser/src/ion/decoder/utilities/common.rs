@@ -1,6 +1,3 @@
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-use std::io::Read;
-
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 use zstd::zstd_safe;
 
@@ -121,19 +118,13 @@ pub(crate) fn decompress_zstd(
 
     budget.validate(comp.len(), expected)?;
 
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(comp)
+    let mut out = vec![0u8; expected];
+    let mut workspace = osmo::DecodeWorkspace::new_boxed();
+    let actual = osmo::decompress(comp, &mut out, &mut workspace)
         .map_err(|err| IonError::from(format!("zstd decode failed: {err:?}")))?;
-    let mut out = Vec::with_capacity(expected);
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|err| IonError::from(format!("zstd decode failed: {err}")))?;
 
-    if out.len() != expected {
-        return Err(format!(
-            "zstd: bad decoded size (got={}, expected={expected})",
-            out.len()
-        )
-        .into());
+    if actual != expected {
+        return Err(format!("zstd: bad decoded size (got={actual}, expected={expected})").into());
     }
 
     Ok(out)

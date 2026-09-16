@@ -23,7 +23,7 @@ rayon = { workspace = true }
 memmap2 = "0.9"
 
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies]
-ruzstd = { workspace = true }
+osmo = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 proptest = "1"
