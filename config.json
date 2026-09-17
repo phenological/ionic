@@ -1,5 +1,13 @@
 [
   {
+    "package": "0.1.2",
+    "format": {
+      "current": 1,
+      "min_supported": 0,
+      "max_supported": 1
+    }
+  },
+  {
     "package": "0.1.1",
     "format": {
       "current": 1,
