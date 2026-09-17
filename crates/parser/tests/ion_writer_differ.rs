@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use common::canonical_diff_paths;
 use ionic::{
     ion::{
-        IonReader, ReadOptions, SectionStorage, TARGET_BLOCK_UNCOMPRESSED_BYTES, WriteOptions, write_mzml_to_ion,
+        IonReader, ReadOptions, SectionStorage, TARGET_BLOCK_UNCOMPRESSED_BYTES, WriteOptions,
+        write_mzml_to_ion,
     },
     mzml::parse_mzml::parse_mzml,
 };

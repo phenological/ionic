@@ -122,7 +122,7 @@ output.flush()?;
 
 ```rust
 pub struct WriteOptions {
-    pub compression_level: u8,           // 0 = off, 1..=22 zstd; default 22
+    pub compression_level: u8,           // 0 = off, 1..=22 zstd; default 12
     pub force_f32: bool,                 // narrow f64 arrays to f32 (lossy); default false
     pub block_size: usize,               // target uncompressed block bytes; default 1 MiB
     pub parallel: bool,                  // default true
@@ -138,9 +138,10 @@ A fixed 1024-byte header stores the byte offset of every section. A reader uses 
 ## Portability
 
 The library depends only on standard byte operations: no HDF5, no storage engine, nothing
-to install alongside a file. On `wasm32-unknown-unknown` the build swaps `zstd` for the
-pure-Rust `ruzstd` and drops `rayon` and `memmap2`, so the same reader compiles into a
-browser bundle. That is what [ion-beam](https://github.com/phenological/ion-beam) runs on.
+to install alongside a file. Compression uses the pure-Rust [cosmoz](https://crates.io/crates/cosmoz)
+on every target, so native and `wasm32-unknown-unknown` share the same zstd code. The wasm build
+drops `rayon` and `memmap2`, and browser conversions use compression level 1. That is what
+[ion-beam](https://github.com/phenological/ion-beam) runs on.
 
 ## Related projects
 

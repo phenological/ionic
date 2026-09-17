@@ -158,6 +158,15 @@ pub(crate) fn extract_chrom_summary(chrom: &Chromatogram) -> ChromatogramSummary
     summary
 }
 
+pub(crate) fn get_supported_compression_level(compression_level: u8) -> u8 {
+    match compression_level {
+        0..=5 => 1,
+        6..=10 => 9,
+        11..=16 => 12,
+        _ => 22,
+    }
+}
+
 pub(crate) fn allow_compression_level(compression_level: u8) -> IonResult<()> {
     if compression_level > 22 {
         return Err(format!("compression_level must be 0-22, got {compression_level}").into());
@@ -178,7 +187,7 @@ pub struct WriteOptions {
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
-            compression_level: 22,
+            compression_level: 12,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
             parallel: true,

@@ -7,8 +7,10 @@ use std::{
 };
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-use zstd::stream::write::Encoder;
+use cosmoz::StreamWriter;
 
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+use crate::ion::encoder::encode::get_supported_compression_level;
 use crate::ion::{IonError, IonResult};
 
 pub trait WriteBytes {
@@ -91,7 +93,7 @@ static NEXT_SECTION_ID: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 pub(crate) struct SpilledSection {
-    packer: Option<Encoder<'static, BufWriter<File>>>,
+    packer: Option<StreamWriter<BufWriter<File>>>,
     path: PathBuf,
     len: u64,
 }
@@ -196,11 +198,12 @@ impl SectionChunk {
             .write(true)
             .create_new(true)
             .open(&path)
-            .map_err(|err| {
-                IonError::from(format!("cannot create '{}': {err}", path.display()))
-            })?;
-        let packer = Encoder::new(BufWriter::with_capacity(1 << 20, file), level as i32)
-            .map_err(|err| IonError::from(format!("zstd start error: {err}")))?;
+            .map_err(|err| IonError::from(format!("cannot create '{}': {err}", path.display())))?;
+        let packer = StreamWriter::new(
+            BufWriter::with_capacity(1 << 20, file),
+            get_supported_compression_level(level),
+        )
+        .map_err(|err| IonError::from(format!("zstd start error: {err}")))?;
         Ok(SectionChunk::Spilled(SpilledSection {
             packer: Some(packer),
             path,
@@ -253,9 +256,9 @@ impl SectionChunk {
         match self {
             SectionChunk::Memory(buffer) => Ok(buffer),
             #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-            SectionChunk::Spilled(_) => {
-                Err(IonError::from("a spilled section cannot be read into memory"))
-            }
+            SectionChunk::Spilled(_) => Err(IonError::from(
+                "a spilled section cannot be read into memory",
+            )),
         }
     }
 
@@ -311,6 +314,8 @@ fn pad_to_alignment(output: &mut dyn WriteBytes) -> IonResult<u64> {
 
 #[cfg(all(test, not(all(target_arch = "wasm32", not(target_os = "wasi")))))]
 mod tests {
+    use cosmoz::{DecodeWorkspace, decompress};
+
     use super::*;
 
     fn row(seed: u64) -> [u8; 64] {
@@ -383,7 +388,10 @@ mod tests {
         assert!(stored < written.len() as u64);
         assert_eq!(crc32, crc32fast::hash(&output));
 
-        let restored = zstd::decode_all(&output[..]).unwrap();
+        let mut restored = vec![0u8; written.len()];
+        let mut workspace = DecodeWorkspace::new_boxed();
+        let restored_length = decompress(&output, &mut restored, &mut workspace).unwrap();
+        assert_eq!(restored_length, written.len());
         assert_eq!(restored, written);
     }
 

@@ -149,7 +149,7 @@ struct ConvertArgs {
     #[arg(
         long = "level",
         conflicts_with = "update",
-        default_value_t = 22,
+        default_value_t = 12,
         value_parser = clap::value_parser!(u8).range(0..=22),
         help = "Compression level 0–22 (0 = off)"
     )]
@@ -227,7 +227,6 @@ struct ConvertArgs {
     #[command(flatten)]
     which: ConvertWhich,
 }
-
 
 #[derive(Args)]
 struct ConvertWhich {
@@ -973,8 +972,7 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
 
     let t_all = Instant::now();
 
-    let default_mzml_to_ion =
-        !cmd.which.mzml_to_ion && !cmd.which.ion_to_mzml && !cmd.which.update;
+    let default_mzml_to_ion = !cmd.which.mzml_to_ion && !cmd.which.ion_to_mzml && !cmd.which.update;
 
     let mzml_to_ion = cmd.which.mzml_to_ion || default_mzml_to_ion;
     let ion_to_mzml = cmd.which.ion_to_mzml;

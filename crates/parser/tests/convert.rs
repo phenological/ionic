@@ -38,7 +38,7 @@ fn options_with_kind(kind: ConvertKind) -> ConvertOptions {
 }
 
 fn expected_ion_bytes() -> Vec<u8> {
-    encode_to_ion(&parse_test_file(MZML), 22, false)
+    encode_to_ion(&parse_test_file(MZML), 12, false)
 }
 
 fn expected_mzml_xml() -> Vec<u8> {

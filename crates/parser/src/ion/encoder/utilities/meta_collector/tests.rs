@@ -185,7 +185,9 @@ fn collector_global_meta_on_empty_mzml_produces_run_buffer() {
 #[test]
 fn grouped_metadata_keeps_values_local_to_each_group() {
     use crate::ion::{
-        DecompressionLimit, decoder::decode::MetadatumValue, format::CODEC_NONE,
+        DecompressionLimit,
+        decoder::decode::MetadatumValue,
+        format::CODEC_NONE,
         meta_groups::MetaTotals,
         utilities::{MetaGroupReader, meta_column_layout::MetaColumnLayout},
     };
@@ -258,7 +260,9 @@ fn grouped_bytes(grouped: &grouper::GroupedSection) -> &[u8] {
 #[test]
 fn metadata_reader_rejects_wrong_uncompressed_total() {
     use crate::ion::{
-        DecompressionLimit, format::CODEC_NONE, meta_groups::MetaTotals,
+        DecompressionLimit,
+        format::CODEC_NONE,
+        meta_groups::MetaTotals,
         utilities::{MetaGroupReader, meta_column_layout::MetaColumnLayout},
     };
 
@@ -286,7 +290,9 @@ fn metadata_reader_rejects_wrong_uncompressed_total() {
 #[test]
 fn metadata_reader_rejects_wrong_row_total() {
     use crate::ion::{
-        DecompressionLimit, format::CODEC_NONE, meta_groups::MetaTotals,
+        DecompressionLimit,
+        format::CODEC_NONE,
+        meta_groups::MetaTotals,
         utilities::{MetaGroupReader, meta_column_layout::MetaColumnLayout},
     };
 
