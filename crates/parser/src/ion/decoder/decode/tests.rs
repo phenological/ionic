@@ -1125,8 +1125,7 @@ fn split_mz_array_roundtrips_with_disk_staged_bounds() {
     let mz: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 0.001).collect();
     let int: Vec<f64> = (0..n).map(|i| (i % 1000) as f64).collect();
 
-    let encoded =
-        encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
+    let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
 
     let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
 

@@ -266,15 +266,15 @@ fn rebuild_value_indices(value_kinds: &[u8]) -> IonResult<Vec<u32>> {
         match kind {
             0 => {
                 value_indices.push(next_numeric_ordinal);
-                next_numeric_ordinal = next_numeric_ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| crate::ion::IonError::from("numeric value ordinal overflows u32"))?;
+                next_numeric_ordinal = next_numeric_ordinal.checked_add(1).ok_or_else(|| {
+                    crate::ion::IonError::from("numeric value ordinal overflows u32")
+                })?;
             }
             1 => {
                 value_indices.push(next_string_ordinal);
-                next_string_ordinal = next_string_ordinal
-                    .checked_add(1)
-                    .ok_or_else(|| crate::ion::IonError::from("string value ordinal overflows u32"))?;
+                next_string_ordinal = next_string_ordinal.checked_add(1).ok_or_else(|| {
+                    crate::ion::IonError::from("string value ordinal overflows u32")
+                })?;
             }
             _ => value_indices.push(0),
         }

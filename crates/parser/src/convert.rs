@@ -138,7 +138,7 @@ fn mzml_to_ion(input: &Input<'_>, options: ConvertOptions) -> IonResult<Option<V
     let write = options.write;
     #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     let write = WriteOptions {
-        compression_level: 0,
+        compression_level: 1,
         ..options.write
     };
     match options.output {

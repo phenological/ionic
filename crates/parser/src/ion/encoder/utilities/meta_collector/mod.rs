@@ -6,8 +6,8 @@ mod tests;
 
 pub(crate) use grouper::{GroupedSection, MetaGrouper, serialize_global_meta_with_counts};
 pub(crate) use schema::MzmlListItem;
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-use zstd::bulk::compress as zstd_compress;
+
+use cosmoz::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
 
 use crate::{
     accessions::{INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY},
@@ -18,6 +18,7 @@ use crate::{
             parse_accession_tail,
         },
         decoder::decode::MetadatumValue,
+        encoder::encode::get_supported_compression_level,
         utilities::assign_attributes_into,
     },
     mzml::{
@@ -614,20 +615,20 @@ impl MetadataWriter for PackedMetaBuilder {
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-pub(crate) fn compress_bytes_if_enabled(bytes: Vec<u8>, level: u8) -> Vec<u8> {
-    if level == 0 {
-        bytes
-    } else {
-        zstd_compress(&bytes, level as i32).expect("zstd compression failed")
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 pub(crate) fn compress_bytes_if_enabled(bytes: Vec<u8>, level: u8) -> Vec<u8> {
     if level == 0 {
         return bytes;
     }
-    let ruzstd_level = super::block_writer::get_ruzstd_level(level as i32);
-    ruzstd::encoding::compress_to_vec(bytes.as_slice(), ruzstd_level)
+    let options = CompressOptions {
+        level: get_supported_compression_level(level),
+        with_checksum: false,
+        ..Default::default()
+    };
+    let mut workspace =
+        EncodeWorkspace::new_boxed_for_level(options.level).expect("zstd compression failed");
+    let mut out = vec![0u8; get_max_compressed_size(bytes.len(), &options)];
+    let written = compress(&bytes, &mut out, &options, &mut workspace)
+        .expect("zstd compression failed");
+    out.truncate(written);
+    out
 }

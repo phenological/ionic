@@ -1,5 +1,7 @@
 use std::{fs::File, io::IsTerminal, path::Path, sync::OnceLock};
 
+use cosmoz::{DecodeWorkspace, decompress};
+
 use ionic::ion::{
     CODEC_NONE, CODEC_ZSTD, FILE_SIGNATURE, FILE_TRAILER, HEADER_SIZE, get_version_from_header,
     is_supported,
@@ -88,7 +90,16 @@ fn read_fixed_section(
     if plain_len == 0 {
         return Ok(Vec::new());
     }
-    zstd::bulk::decompress(stored, plain_len).map_err(|e| format!("decompress failed: {e}"))
+    decompress_section(stored, plain_len)
+}
+
+fn decompress_section(stored: &[u8], plain_len: usize) -> Result<Vec<u8>, String> {
+    let mut plain = vec![0u8; plain_len];
+    let mut workspace = DecodeWorkspace::new_boxed();
+    let written = decompress(stored, &mut plain, &mut workspace)
+        .map_err(|e| format!("decompress failed: {e:?}"))?;
+    plain.truncate(written);
+    Ok(plain)
 }
 
 fn read_address_section(
@@ -117,10 +128,24 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8]) -> FixedSections {
     let spec_count = u64_at(header, 256);
     let chrom_count = u64_at(header, 264);
 
-    let spec_summary =
-        read_fixed_section(bytes, header, 48, 56, spec_count, SPEC_SUMMARY_ROW, compressed);
-    let spec_entries =
-        read_fixed_section(bytes, header, 64, 72, spec_count, INDEX_ENTRY_ROW, compressed);
+    let spec_summary = read_fixed_section(
+        bytes,
+        header,
+        48,
+        56,
+        spec_count,
+        SPEC_SUMMARY_ROW,
+        compressed,
+    );
+    let spec_entries = read_fixed_section(
+        bytes,
+        header,
+        64,
+        72,
+        spec_count,
+        INDEX_ENTRY_ROW,
+        compressed,
+    );
     let spec_addresses = read_address_section(bytes, header, 80, 88, &spec_entries, compressed);
     let chrom_summary = read_fixed_section(
         bytes,
@@ -131,8 +156,15 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8]) -> FixedSections {
         SPEC_SUMMARY_ROW,
         compressed,
     );
-    let chrom_entries =
-        read_fixed_section(bytes, header, 128, 136, chrom_count, INDEX_ENTRY_ROW, compressed);
+    let chrom_entries = read_fixed_section(
+        bytes,
+        header,
+        128,
+        136,
+        chrom_count,
+        INDEX_ENTRY_ROW,
+        compressed,
+    );
     let chrom_addresses = read_address_section(bytes, header, 144, 152, &chrom_entries, compressed);
 
     FixedSections {
@@ -145,7 +177,11 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8]) -> FixedSections {
     }
 }
 
-fn check_fixed(section: &Result<Vec<u8>, String>, record: u64, count: Option<u64>) -> Result<(), String> {
+fn check_fixed(
+    section: &Result<Vec<u8>, String>,
+    record: u64,
+    count: Option<u64>,
+) -> Result<(), String> {
     let plain = section.as_ref().map_err(|why| why.clone())?;
     let len = plain.len() as u64;
     if len % record != 0 {
@@ -154,7 +190,10 @@ fn check_fixed(section: &Result<Vec<u8>, String>, record: u64, count: Option<u64
     if let Some(expected_count) = count {
         let expected = expected_count.checked_mul(record).ok_or("count overflow")?;
         if len != expected {
-            return Err(format!("{} records, expected {expected_count}", len / record));
+            return Err(format!(
+                "{} records, expected {expected_count}",
+                len / record
+            ));
         }
     }
     Ok(())
@@ -410,7 +449,7 @@ fn open_window_directory(
         CODEC_NONE => raw.to_vec(),
         CODEC_ZSTD => {
             let plain_len = u64_at(header, plain_len_at) as usize;
-            zstd::bulk::decompress(raw, plain_len).map_err(|e| format!("decompress failed: {e}"))?
+            decompress_section(raw, plain_len)?
         }
         _ => return Err("unknown codec".into()),
     };
@@ -586,11 +625,19 @@ fn section_check_results(view: &HeaderView<'_>) -> [Result<(), String>; 8] {
     let chrom_count = view.read_header_u64(264);
     [
         view.spec_window_dir.clone().map(|_| ()),
-        check_fixed(&view.fixed.spec_summary, SPEC_SUMMARY_ROW as u64, Some(spec_count)),
+        check_fixed(
+            &view.fixed.spec_summary,
+            SPEC_SUMMARY_ROW as u64,
+            Some(spec_count),
+        ),
         check_fixed(&view.fixed.spec_entries, 16, Some(spec_count)),
         check_fixed(&view.fixed.spec_addresses, 32, None),
         view.chrom_window_dir.clone().map(|_| ()),
-        check_fixed(&view.fixed.chrom_summary, SPEC_SUMMARY_ROW as u64, Some(chrom_count)),
+        check_fixed(
+            &view.fixed.chrom_summary,
+            SPEC_SUMMARY_ROW as u64,
+            Some(chrom_count),
+        ),
         check_fixed(&view.fixed.chrom_entries, 16, Some(chrom_count)),
         check_fixed(&view.fixed.chrom_addresses, 32, None),
     ]

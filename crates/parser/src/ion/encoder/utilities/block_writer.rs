@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
+use cosmoz::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 use rayon::prelude::*;
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-use zstd::{bulk::Compressor as ZstdCompressor, zstd_safe::compress_bound};
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 use crate::ion::encoder::utilities::output::RawSpill;
 use crate::ion::{
-    IonError, IonResult, byte_transpose::shuffle_with_tail, encoder::utilities::output::WriteBytes,
+    IonError, IonResult,
+    byte_transpose::shuffle_with_tail,
+    encoder::{encode::get_supported_compression_level, utilities::output::WriteBytes},
     packing::PackingId,
 };
 
@@ -50,71 +51,38 @@ pub(crate) trait BlockCompressor {
     fn shuffle_bytes_into(&self, input: &[u8], output: &mut [u8], element_stride: usize);
 }
 
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 pub(crate) struct DefaultCompressor {
-    level: i32,
-    inner: ZstdCompressor<'static>,
+    level: u8,
+    workspace: Box<EncodeWorkspace>,
 }
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-pub(crate) struct DefaultCompressor {
-    level: ruzstd::encoding::CompressionLevel,
-}
-
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 impl DefaultCompressor {
     pub(crate) fn new(compression_level: i32) -> IonResult<Self> {
-        Ok(Self {
-            level: compression_level,
-            inner: ZstdCompressor::new(compression_level)
-                .map_err(|err| IonError::from(err.to_string()))?,
-        })
+        let level = get_supported_compression_level(compression_level.clamp(0, 22) as u8);
+        let workspace = EncodeWorkspace::new_boxed_for_level(level)
+            .map_err(|err| IonError::from(format!("zstd start error: {err:?}")))?;
+        Ok(Self { level, workspace })
     }
 }
 
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-impl DefaultCompressor {
-    pub(crate) fn new(compression_level: i32) -> IonResult<Self> {
-        Ok(Self {
-            level: get_ruzstd_level(compression_level),
-        })
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-pub(crate) fn get_ruzstd_level(compression_level: i32) -> ruzstd::encoding::CompressionLevel {
-    if compression_level == 0 {
-        ruzstd::encoding::CompressionLevel::Uncompressed
-    } else {
-        ruzstd::encoding::CompressionLevel::Fastest
-    }
-}
-
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 impl BlockCompressor for DefaultCompressor {
     fn compress(&mut self, input: &[u8], output: &mut Vec<u8>) -> IonResult<usize> {
+        let options = CompressOptions {
+            level: self.level,
+            with_checksum: false,
+            ..Default::default()
+        };
         output.clear();
-        output.reserve(compress_bound(input.len()));
-        self.inner
-            .compress_to_buffer(input, output)
-            .map_err(|err| IonError::from(err.to_string()))
+        output.resize(get_max_compressed_size(input.len(), &options), 0);
+        let written = compress(input, output, &options, &mut self.workspace)
+            .map_err(|err| IonError::from(format!("zstd encode failed: {err:?}")))?;
+        output.truncate(written);
+        Ok(written)
     }
 
+    #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
     fn fork(&self) -> IonResult<Self> {
-        Self::new(self.level)
-    }
-
-    fn shuffle_bytes_into(&self, input: &[u8], output: &mut [u8], element_stride: usize) {
-        shuffle_with_tail(input, output, element_stride);
-    }
-}
-
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-impl BlockCompressor for DefaultCompressor {
-    fn compress(&mut self, input: &[u8], output: &mut Vec<u8>) -> IonResult<usize> {
-        output.clear();
-        ruzstd::encoding::compress(input, &mut *output, self.level);
-        Ok(output.len())
+        Self::new(self.level as i32)
     }
 
     fn shuffle_bytes_into(&self, input: &[u8], output: &mut [u8], element_stride: usize) {

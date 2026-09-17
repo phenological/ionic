@@ -9,8 +9,8 @@ use common::{
 use ionic::{
     ByteRange, BytesSource, CallbackSource, Range, ScanSource,
     ion::{
-        IonError, IonReader, IonWriter, MemoryReader, ReadOptions, SectionStorage, TARGET_BLOCK_UNCOMPRESSED_BYTES,
-        WriteOptions, open_ranges,
+        IonError, IonReader, IonWriter, MemoryReader, ReadOptions, SectionStorage,
+        TARGET_BLOCK_UNCOMPRESSED_BYTES, WriteOptions, open_ranges,
     },
 };
 

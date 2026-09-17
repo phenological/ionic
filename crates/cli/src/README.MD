@@ -67,7 +67,7 @@ the relative folder structure under `--output-path`.
 
 - `--level <0..22>`
   - zstd compression level for the data blocks. `0` disables compression.
-    Default: `22`.
+    Default: `12`.
 
 - `--mz-window <DA>`
   - Width, in Da (m/z units), of the windowed layout. A spectrum's m/z and intensity
@@ -153,7 +153,7 @@ You may pass **at most one** of the following:
 
 Defaults:
 
-- `--level 22`, `--mz-window 250`, `--block-size 8`, `--storage disk`
+- `--level 12`, `--mz-window 250`, `--block-size 8`, `--storage disk`
 
 Run (defaults):
 

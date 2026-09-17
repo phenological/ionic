@@ -1,8 +1,4 @@
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-use std::io::Read;
-
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-use zstd::zstd_safe;
+use cosmoz::{DecodeWorkspace, decompress, get_frame_compressed_size};
 
 use crate::ion::{
     IonError, IonResult,
@@ -84,7 +80,6 @@ pub(crate) fn read_f64_vec(bytes: &[u8], pos: &mut usize, n: usize) -> IonResult
 }
 
 #[inline]
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 pub(crate) fn decompress_zstd(
     comp: &[u8],
     expected: usize,
@@ -96,44 +91,13 @@ pub(crate) fn decompress_zstd(
 
     budget.validate(comp.len(), expected)?;
 
-    let mut out: Vec<u8> = Vec::with_capacity(expected);
-
-    let actual = zstd_safe::decompress(&mut out, comp)
-        .map_err(|e| IonError::from(format!("zstd decode failed: {e:?}")))?;
+    let mut out = vec![0u8; expected];
+    let mut workspace = DecodeWorkspace::new_boxed();
+    let actual = decompress(comp, &mut out, &mut workspace)
+        .map_err(|err| IonError::from(format!("zstd decode failed: {err:?}")))?;
 
     if actual != expected {
         return Err(format!("zstd: bad decoded size (got={actual}, expected={expected})").into());
-    }
-
-    Ok(out)
-}
-
-#[inline]
-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
-pub(crate) fn decompress_zstd(
-    comp: &[u8],
-    expected: usize,
-    budget: DecompressionLimit,
-) -> IonResult<Vec<u8>> {
-    if expected == 0 {
-        return Ok(Vec::new());
-    }
-
-    budget.validate(comp.len(), expected)?;
-
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(comp)
-        .map_err(|err| IonError::from(format!("zstd decode failed: {err:?}")))?;
-    let mut out = Vec::with_capacity(expected);
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|err| IonError::from(format!("zstd decode failed: {err}")))?;
-
-    if out.len() != expected {
-        return Err(format!(
-            "zstd: bad decoded size (got={}, expected={expected})",
-            out.len()
-        )
-        .into());
     }
 
     Ok(out)
@@ -149,8 +113,7 @@ pub(crate) fn decompress_zstd_allow_aligned_padding(
         return Ok(Vec::new());
     }
 
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-    if let Ok(n) = zstd_safe::find_frame_compressed_size(input)
+    if let Ok(n) = get_frame_compressed_size(input)
         && n > 0
         && n <= input.len()
         && let Ok(v) = decompress_zstd(&input[..n], expected, budget)
@@ -267,23 +230,25 @@ pub(crate) fn parse_accession_tail(accession: Option<&str>) -> AccessionTail {
 }
 
 #[cfg(test)]
-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 mod tests {
-    use zstd::zstd_safe;
+    use cosmoz::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
 
     use super::*;
     use crate::ion::decoder::utilities::decompression_limit::DecompressionLimit;
 
-    fn compress(data: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(zstd_safe::compress_bound(data.len()));
-        zstd_safe::compress(&mut out, data, 3).unwrap();
+    fn compress_to_frame(data: &[u8]) -> Vec<u8> {
+        let options = CompressOptions::zstd();
+        let mut workspace = EncodeWorkspace::new_boxed();
+        let mut out = vec![0u8; get_max_compressed_size(data.len(), &options)];
+        let written = compress(data, &mut out, &options, &mut workspace).unwrap();
+        out.truncate(written);
         out
     }
 
     #[test]
     fn decompress_zstd_round_trips_bytes() {
         let original: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
-        let compressed = compress(&original);
+        let compressed = compress_to_frame(&original);
         let restored =
             decompress_zstd(&compressed, original.len(), DecompressionLimit::default()).unwrap();
         assert_eq!(restored, original);

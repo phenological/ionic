@@ -5,8 +5,8 @@ use std::sync::Arc;
 use ionic::{
     BytesSource,
     ion::{
-        IonReader, IonWriter, MemoryReader, Range, ReadOptions, SectionStorage, TARGET_BLOCK_UNCOMPRESSED_BYTES,
-        WriteOptions,
+        IonReader, IonWriter, MemoryReader, Range, ReadOptions, SectionStorage,
+        TARGET_BLOCK_UNCOMPRESSED_BYTES, WriteOptions,
     },
     mzml::structs::{
         BinaryDataArray, BinaryDataArrayList, CvParam, MzML, NumericArray, Run, Spectrum,

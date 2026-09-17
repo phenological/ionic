@@ -1,8 +1,21 @@
 [package]
-name = "ionic"
+name = "ionic-rs"
+description = "Streamable binary format for mass-spectrometry data: lossless mzML conversion, random access, WebAssembly support"
 version.workspace = true
+authors.workspace = true
 license.workspace = true
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/ionic-rs"
+readme = "../../README.md"
+keywords = ["mzml", "wasm"]
+categories = ["parser-implementations", "encoding", "wasm"]
+include = ["src/**/*", "Cargo.toml", "LICENSE"]
+
+[lib]
+name = "ionic"
 
 [dependencies]
 serde = { workspace = true }
@@ -13,18 +26,14 @@ quick-xml = { workspace = true }
 serde_json = { workspace = true }
 hashbrown = "0.17.1"
 itoa = { workspace = true }
+cosmoz = { workspace = true }
 crc32fast = "1.5.0"
 sha1 = "0.11"
 bytemuck = "1"
 
 [target.'cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))'.dependencies]
-zstd = { workspace = true }
 rayon = { workspace = true }
 memmap2 = "0.9"
 
-[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies]
-ruzstd = { workspace = true }
-
 [dev-dependencies]
 proptest = "1"
-sha1 = "0.11"
