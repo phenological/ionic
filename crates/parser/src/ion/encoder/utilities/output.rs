@@ -7,7 +7,7 @@ use std::{
 };
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-use cosmoz::StreamWriter;
+use cosmoz::{CompressOptions, Compressor};
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 use crate::ion::encoder::encode::get_supported_compression_level;
@@ -93,7 +93,7 @@ static NEXT_SECTION_ID: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 pub(crate) struct SpilledSection {
-    packer: Option<StreamWriter<BufWriter<File>>>,
+    packer: Option<Compressor<BufWriter<File>>>,
     path: PathBuf,
     len: u64,
 }
@@ -199,9 +199,12 @@ impl SectionChunk {
             .create_new(true)
             .open(&path)
             .map_err(|err| IonError::from(format!("cannot create '{}': {err}", path.display())))?;
-        let packer = StreamWriter::new(
+        let packer = Compressor::to(
             BufWriter::with_capacity(1 << 20, file),
-            get_supported_compression_level(level),
+            &CompressOptions {
+                level: get_supported_compression_level(level),
+                ..Default::default()
+            },
         )
         .map_err(|err| IonError::from(format!("zstd start error: {err}")))?;
         Ok(SectionChunk::Spilled(SpilledSection {
@@ -314,7 +317,7 @@ fn pad_to_alignment(output: &mut dyn WriteBytes) -> IonResult<u64> {
 
 #[cfg(all(test, not(all(target_arch = "wasm32", not(target_os = "wasi")))))]
 mod tests {
-    use cosmoz::{DecodeWorkspace, decompress};
+    use cosmoz::{DecompressOptions, Decoder, decompress_into};
 
     use super::*;
 
@@ -389,8 +392,10 @@ mod tests {
         assert_eq!(crc32, crc32fast::hash(&output));
 
         let mut restored = vec![0u8; written.len()];
-        let mut workspace = DecodeWorkspace::new_boxed();
-        let restored_length = decompress(&output, &mut restored, &mut workspace).unwrap();
+        let mut decoder = Decoder::new();
+        let restored_length =
+            decompress_into(&output, &mut restored, &DecompressOptions::default(), &mut decoder)
+                .unwrap();
         assert_eq!(restored_length, written.len());
         assert_eq!(restored, written);
     }

@@ -1,4 +1,4 @@
-use cosmoz::{DecodeWorkspace, decompress, get_frame_compressed_size};
+use cosmoz::{DecompressOptions, Decoder, compressed_size, decompress_into};
 
 use crate::ion::{
     IonError, IonResult,
@@ -92,8 +92,8 @@ pub(crate) fn decompress_zstd(
     budget.validate(comp.len(), expected)?;
 
     let mut out = vec![0u8; expected];
-    let mut workspace = DecodeWorkspace::new_boxed();
-    let actual = decompress(comp, &mut out, &mut workspace)
+    let mut decoder = Decoder::new();
+    let actual = decompress_into(comp, &mut out, &DecompressOptions::default(), &mut decoder)
         .map_err(|err| IonError::from(format!("zstd decode failed: {err:?}")))?;
 
     if actual != expected {
@@ -113,7 +113,7 @@ pub(crate) fn decompress_zstd_allow_aligned_padding(
         return Ok(Vec::new());
     }
 
-    if let Ok(n) = get_frame_compressed_size(input)
+    if let Ok(n) = compressed_size(input)
         && n > 0
         && n <= input.len()
         && let Ok(v) = decompress_zstd(&input[..n], expected, budget)
@@ -231,16 +231,16 @@ pub(crate) fn parse_accession_tail(accession: Option<&str>) -> AccessionTail {
 
 #[cfg(test)]
 mod tests {
-    use cosmoz::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
+    use cosmoz::{CompressOptions, Encoder, compress_into, max_compressed_size};
 
     use super::*;
     use crate::ion::decoder::utilities::decompression_limit::DecompressionLimit;
 
     fn compress_to_frame(data: &[u8]) -> Vec<u8> {
-        let options = CompressOptions::zstd();
-        let mut workspace = EncodeWorkspace::new_boxed();
-        let mut out = vec![0u8; get_max_compressed_size(data.len(), &options)];
-        let written = compress(data, &mut out, &options, &mut workspace).unwrap();
+        let options = CompressOptions::default();
+        let mut encoder = Encoder::new(&options).unwrap();
+        let mut out = vec![0u8; max_compressed_size(data.len(), &options)];
+        let written = compress_into(data, &mut out, &options, &mut encoder).unwrap();
         out.truncate(written);
         out
     }

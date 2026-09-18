@@ -1,6 +1,6 @@
 use std::{fs::File, io::IsTerminal, path::Path, sync::OnceLock};
 
-use cosmoz::{DecodeWorkspace, decompress};
+use cosmoz::{DecompressOptions, Decoder, decompress_into};
 
 use ionic::ion::{
     CODEC_NONE, CODEC_ZSTD, FILE_SIGNATURE, FILE_TRAILER, HEADER_SIZE, get_version_from_header,
@@ -72,6 +72,7 @@ fn read_fixed_section(
     plain_count: u64,
     record: usize,
     compressed: bool,
+    decoder: &mut Decoder,
 ) -> Result<Vec<u8>, String> {
     let off = u64_at(header, off_at) as usize;
     let len = u64_at(header, len_at) as usize;
@@ -90,13 +91,16 @@ fn read_fixed_section(
     if plain_len == 0 {
         return Ok(Vec::new());
     }
-    decompress_section(stored, plain_len)
+    decompress_section(stored, plain_len, decoder)
 }
 
-fn decompress_section(stored: &[u8], plain_len: usize) -> Result<Vec<u8>, String> {
+fn decompress_section(
+    stored: &[u8],
+    plain_len: usize,
+    decoder: &mut Decoder,
+) -> Result<Vec<u8>, String> {
     let mut plain = vec![0u8; plain_len];
-    let mut workspace = DecodeWorkspace::new_boxed();
-    let written = decompress(stored, &mut plain, &mut workspace)
+    let written = decompress_into(stored, &mut plain, &DecompressOptions::default(), decoder)
         .map_err(|e| format!("decompress failed: {e:?}"))?;
     plain.truncate(written);
     Ok(plain)
@@ -109,6 +113,7 @@ fn read_address_section(
     len_at: usize,
     entries: &Result<Vec<u8>, String>,
     compressed: bool,
+    decoder: &mut Decoder,
 ) -> Result<Vec<u8>, String> {
     let entries = entries.as_ref().map_err(|why| why.clone())?;
     let address_count = max_address_index(entries);
@@ -120,10 +125,11 @@ fn read_address_section(
         address_count,
         ARRAY_ADDRESS_ROW,
         compressed,
+        decoder,
     )
 }
 
-fn resolve_fixed_sections(bytes: &[u8], header: &[u8]) -> FixedSections {
+fn resolve_fixed_sections(bytes: &[u8], header: &[u8], decoder: &mut Decoder) -> FixedSections {
     let compressed = header[11] == CODEC_ZSTD;
     let spec_count = u64_at(header, 256);
     let chrom_count = u64_at(header, 264);
@@ -136,6 +142,7 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8]) -> FixedSections {
         spec_count,
         SPEC_SUMMARY_ROW,
         compressed,
+        decoder,
     );
     let spec_entries = read_fixed_section(
         bytes,
@@ -145,8 +152,10 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8]) -> FixedSections {
         spec_count,
         INDEX_ENTRY_ROW,
         compressed,
+        decoder,
     );
-    let spec_addresses = read_address_section(bytes, header, 80, 88, &spec_entries, compressed);
+    let spec_addresses =
+        read_address_section(bytes, header, 80, 88, &spec_entries, compressed, decoder);
     let chrom_summary = read_fixed_section(
         bytes,
         header,
@@ -155,6 +164,7 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8]) -> FixedSections {
         chrom_count,
         SPEC_SUMMARY_ROW,
         compressed,
+        decoder,
     );
     let chrom_entries = read_fixed_section(
         bytes,
@@ -164,8 +174,17 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8]) -> FixedSections {
         chrom_count,
         INDEX_ENTRY_ROW,
         compressed,
+        decoder,
     );
-    let chrom_addresses = read_address_section(bytes, header, 144, 152, &chrom_entries, compressed);
+    let chrom_addresses = read_address_section(
+        bytes,
+        header,
+        144,
+        152,
+        &chrom_entries,
+        compressed,
+        decoder,
+    );
 
     FixedSections {
         spec_summary,
@@ -271,9 +290,10 @@ impl<'a> HeaderView<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         let header = &bytes[..HEADER_SIZE];
         let sections = build_sections(header, u64_at(header, 400));
-        let spec_window_dir = open_window_directory(bytes, header, 32, 40, 384);
-        let chrom_window_dir = open_window_directory(bytes, header, 96, 104, 392);
-        let fixed = resolve_fixed_sections(bytes, header);
+        let mut decoder = Decoder::new();
+        let spec_window_dir = open_window_directory(bytes, header, 32, 40, 384, &mut decoder);
+        let chrom_window_dir = open_window_directory(bytes, header, 96, 104, 392, &mut decoder);
+        let fixed = resolve_fixed_sections(bytes, header, &mut decoder);
         Self {
             bytes,
             header,
@@ -437,6 +457,7 @@ fn open_window_directory(
     off_at: usize,
     len_at: usize,
     plain_len_at: usize,
+    decoder: &mut Decoder,
 ) -> Result<usize, String> {
     let off = u64_at(header, off_at) as usize;
     let len = u64_at(header, len_at) as usize;
@@ -449,7 +470,7 @@ fn open_window_directory(
         CODEC_NONE => raw.to_vec(),
         CODEC_ZSTD => {
             let plain_len = u64_at(header, plain_len_at) as usize;
-            decompress_section(raw, plain_len)?
+            decompress_section(raw, plain_len, decoder)?
         }
         _ => return Err("unknown codec".into()),
     };

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cosmoz::{CompressOptions, EncodeWorkspace, compress, get_max_compressed_size};
+use cosmoz::{CompressOptions, Encoder, compress_into, max_compressed_size};
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 use rayon::prelude::*;
 
@@ -53,15 +53,20 @@ pub(crate) trait BlockCompressor {
 
 pub(crate) struct DefaultCompressor {
     level: u8,
-    workspace: Box<EncodeWorkspace>,
+    encoder: Box<Encoder>,
 }
 
 impl DefaultCompressor {
     pub(crate) fn new(compression_level: i32) -> IonResult<Self> {
         let level = get_supported_compression_level(compression_level.clamp(0, 22) as u8);
-        let workspace = EncodeWorkspace::new_boxed_for_level(level)
+        let options = CompressOptions {
+            level,
+            checksum: false,
+            ..Default::default()
+        };
+        let encoder = Encoder::new(&options)
             .map_err(|err| IonError::from(format!("zstd start error: {err:?}")))?;
-        Ok(Self { level, workspace })
+        Ok(Self { level, encoder })
     }
 }
 
@@ -69,12 +74,12 @@ impl BlockCompressor for DefaultCompressor {
     fn compress(&mut self, input: &[u8], output: &mut Vec<u8>) -> IonResult<usize> {
         let options = CompressOptions {
             level: self.level,
-            with_checksum: false,
+            checksum: false,
             ..Default::default()
         };
         output.clear();
-        output.resize(get_max_compressed_size(input.len(), &options), 0);
-        let written = compress(input, output, &options, &mut self.workspace)
+        output.resize(max_compressed_size(input.len(), &options), 0);
+        let written = compress_into(input, output, &options, &mut self.encoder)
             .map_err(|err| IonError::from(format!("zstd encode failed: {err:?}")))?;
         output.truncate(written);
         Ok(written)
