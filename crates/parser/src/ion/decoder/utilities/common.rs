@@ -2,7 +2,7 @@ use cosmoz::{DecompressOptions, Decoder, compressed_size};
 
 use crate::ion::{
     IonError, IonResult,
-    attr_meta::{AccessionTail, CV_CODE_UNKNOWN, cv_ref_code_from_str},
+    attr_meta::{AccessionTail, CV_CODE_UNKNOWN, cv_ref_code_from_str, parse_accession_tail},
     decoder::{
         decode::{Metadatum, MetadatumValue},
         utilities::decompression_limit::DecompressionLimit,
@@ -60,8 +60,8 @@ pub(crate) fn read_u32_vec(bytes: &[u8], pos: &mut usize, n: usize) -> IonResult
         .ok_or_else(|| IonError::from("u32 vector length overflows usize"))?;
     let raw = take(bytes, pos, byte_len, "u32 vector")?;
     let mut out = Vec::with_capacity(n);
-    for chunk in raw.chunks_exact(4) {
-        out.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    for chunk in raw.as_chunks::<4>().0 {
+        out.push(u32::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -73,8 +73,8 @@ pub(crate) fn read_f64_vec(bytes: &[u8], pos: &mut usize, n: usize) -> IonResult
         .ok_or_else(|| IonError::from("f64 vector length overflows usize"))?;
     let raw = take(bytes, pos, byte_len, "f64 vector")?;
     let mut out = Vec::with_capacity(n);
-    for chunk in raw.chunks_exact(8) {
-        out.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in raw.as_chunks::<8>().0 {
+        out.push(f64::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -207,27 +207,6 @@ pub(crate) fn sum_string_lengths(string_lengths: &[u32]) -> IonResult<usize> {
             .ok_or_else(|| IonError::from("string_lengths sum overflows usize"))?;
     }
     Ok(total)
-}
-
-#[inline]
-pub(crate) fn parse_accession_tail(accession: Option<&str>) -> AccessionTail {
-    let s = accession.unwrap_or("");
-    let tail = s.rsplit_once(':').map(|(_, t)| t).unwrap_or(s);
-    let mut v: u32 = 0;
-    let mut saw = false;
-    for b in tail.bytes() {
-        if b.is_ascii_digit() {
-            saw = true;
-            v = match v
-                .checked_mul(10)
-                .and_then(|x| x.checked_add((b - b'0') as u32))
-            {
-                Some(n) => n,
-                None => return AccessionTail::from_raw(0),
-            };
-        }
-    }
-    AccessionTail::from_raw(if saw { v } else { 0 })
 }
 
 #[cfg(test)]

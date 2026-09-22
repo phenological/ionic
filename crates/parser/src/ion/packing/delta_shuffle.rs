@@ -12,16 +12,24 @@ fn encode_delta<W: DeltaWord>(bits: impl Iterator<Item = W>, out: &mut Vec<u8>) 
     }
 }
 
-fn decode_delta<W: DeltaWord>(input: &[u8], mut emit: impl FnMut(W)) {
-    let mut prev = W::default();
-    for chunk in input.chunks_exact(W::BYTES) {
-        prev = DeltaWord::wrapping_add(prev, W::from_le_chunk(chunk));
+fn decode_delta_u64(input: &[u8], mut emit: impl FnMut(u64)) {
+    let mut prev = 0u64;
+    for chunk in input.as_chunks::<8>().0 {
+        prev = prev.wrapping_add(u64::from_le_bytes(*chunk));
+        emit(prev);
+    }
+}
+
+fn decode_delta_u32(input: &[u8], mut emit: impl FnMut(u32)) {
+    let mut prev = 0u32;
+    for chunk in input.as_chunks::<4>().0 {
+        prev = prev.wrapping_add(u32::from_le_bytes(*chunk));
         emit(prev);
     }
 }
 
 fn require_aligned_input<W: DeltaWord>(input: &[u8]) -> IonResult<()> {
-    if input.len() % W::BYTES == 0 {
+    if input.len().is_multiple_of(W::BYTES) {
         Ok(())
     } else {
         Err(IonError::from(
@@ -51,7 +59,6 @@ impl Packing for DeltaShuffle {
                 encode_delta::<u32>(v.iter().map(|x| x.to_bits()), out);
                 Ok(())
             }
-            _ => Err(IonError::from("delta filter needs f32 or f64 input")),
         }
     }
 
@@ -60,7 +67,7 @@ impl Packing for DeltaShuffle {
             Dtype::F64 => {
                 require_aligned_input::<u64>(input)?;
                 out.reserve(input.len());
-                decode_delta::<u64>(input, |w| {
+                decode_delta_u64(input, |w| {
                     out.extend_from_slice(&f64::from_bits(w).to_le_bytes())
                 });
                 Ok(())
@@ -68,7 +75,7 @@ impl Packing for DeltaShuffle {
             Dtype::F32 => {
                 require_aligned_input::<u32>(input)?;
                 out.reserve(input.len());
-                decode_delta::<u32>(input, |w| {
+                decode_delta_u32(input, |w| {
                     out.extend_from_slice(&f32::from_bits(w).to_le_bytes())
                 });
                 Ok(())
@@ -92,8 +99,10 @@ mod tests {
             .unwrap();
         let mut dec = Vec::new();
         DELTA_SHUFFLE.decode(&enc, Dtype::F64, &mut dec).unwrap();
-        dec.chunks_exact(8)
-            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+        dec.as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_le_bytes(*c))
             .collect()
     }
 
@@ -105,8 +114,10 @@ mod tests {
         assert_eq!(enc.len(), input.len() * 4);
         let mut dec = Vec::new();
         DELTA_SHUFFLE.decode(&enc, Dtype::F32, &mut dec).unwrap();
-        dec.chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        dec.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect()
     }
 
@@ -217,24 +228,24 @@ mod tests {
         use super::super::packing_for;
         use crate::accessions::{INTENSITY_ARRAY, MZ_ARRAY};
         assert_eq!(
-            packing_for(MZ_ARRAY, Dtype::F64, 100).id(),
+            packing_for(MZ_ARRAY, Dtype::F64).id(),
             PackingId::DeltaShuffle
         );
         assert_eq!(
-            packing_for(MZ_ARRAY, Dtype::F32, 100).id(),
+            packing_for(MZ_ARRAY, Dtype::F32).id(),
             PackingId::DeltaShuffle,
             "f32 m/z must also use delta-shuffle"
         );
         assert_eq!(
-            packing_for(INTENSITY_ARRAY, Dtype::F32, 100).id(),
+            packing_for(INTENSITY_ARRAY, Dtype::F32).id(),
             PackingId::Raw,
             "intensity must stay raw"
         );
         assert_eq!(
-            packing_for(INTENSITY_ARRAY, Dtype::F64, 100).id(),
+            packing_for(INTENSITY_ARRAY, Dtype::F64).id(),
             PackingId::Raw,
             "intensity is never delta-shuffled, even at f64"
         );
-        assert_eq!(packing_for(0, Dtype::I32, 1).id(), PackingId::Raw);
+        assert_eq!(packing_for(0, Dtype::I32).id(), PackingId::Raw);
     }
 }

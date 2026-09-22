@@ -1,4 +1,4 @@
-use std::{fs::File, io::IsTerminal, path::Path, sync::OnceLock};
+use std::{fs::File, path::Path};
 
 use cosmoz::{DecompressOptions, Decoder};
 
@@ -6,39 +6,7 @@ use ionic::format::{
     CODEC_NONE, CODEC_ZSTD, FILE_SIGNATURE, FILE_TRAILER, HEADER_SIZE, is_supported, version_of,
 };
 
-static COLOR_ENABLED: OnceLock<bool> = OnceLock::new();
-
-fn color_enabled() -> bool {
-    *COLOR_ENABLED.get_or_init(|| {
-        std::env::var_os("NO_COLOR").is_none()
-            && std::io::stdout().is_terminal()
-            && std::io::stderr().is_terminal()
-    })
-}
-
-fn ansi(code: &'static str) -> &'static str {
-    if color_enabled() { code } else { "" }
-}
-
-fn reset() -> &'static str {
-    ansi("\x1b[0m")
-}
-
-fn green() -> &'static str {
-    ansi("\x1b[1;32m")
-}
-
-fn red() -> &'static str {
-    ansi("\x1b[1;31m")
-}
-
-fn bold() -> &'static str {
-    ansi("\x1b[1m")
-}
-
-fn dim() -> &'static str {
-    ansi("\x1b[2m")
-}
+use super::color::{bold, dim, green, red, reset};
 
 const SPEC_SUMMARY_ROW: usize = 80;
 const INDEX_ENTRY_ROW: usize = 16;
@@ -55,7 +23,7 @@ struct FixedSections {
 
 fn max_address_index(entries: &[u8]) -> u64 {
     let mut total = 0u64;
-    for entry in entries.chunks_exact(INDEX_ENTRY_ROW) {
+    for entry in entries.as_chunks::<INDEX_ENTRY_ROW>().0 {
         let first = u64::from_le_bytes(entry[0..8].try_into().unwrap());
         let count = u64::from_le_bytes(entry[8..16].try_into().unwrap());
         total = total.max(first.saturating_add(count));
@@ -63,29 +31,33 @@ fn max_address_index(entries: &[u8]) -> u64 {
     total
 }
 
-fn read_fixed_section(
-    bytes: &[u8],
-    header: &[u8],
+struct FixedSectionSpec {
     off_at: usize,
     len_at: usize,
     plain_count: u64,
     record: usize,
+}
+
+fn read_fixed_section(
+    bytes: &[u8],
+    header: &[u8],
+    spec: FixedSectionSpec,
     compressed: bool,
     decoder: &mut Decoder,
 ) -> Result<Vec<u8>, String> {
-    let off = u64_at(header, off_at) as usize;
-    let len = u64_at(header, len_at) as usize;
+    let off = u64_at(header, spec.off_at) as usize;
+    let len = u64_at(header, spec.len_at) as usize;
     let end = off.checked_add(len).ok_or("offset overflow")?;
     let stored = bytes.get(off..end).ok_or("section out of bounds")?;
-    if len > 0 && off % 8 != 0 {
+    if len > 0 && !off.is_multiple_of(8) {
         return Err("offset not 8-byte aligned".into());
     }
     if !compressed {
         return Ok(stored.to_vec());
     }
-    let plain_len = usize::try_from(plain_count)
+    let plain_len = usize::try_from(spec.plain_count)
         .ok()
-        .and_then(|count| count.checked_mul(record))
+        .and_then(|count| count.checked_mul(spec.record))
         .ok_or("section size overflow")?;
     if plain_len == 0 {
         return Ok(Vec::new());
@@ -120,10 +92,12 @@ fn read_address_section(
     read_fixed_section(
         bytes,
         header,
-        off_at,
-        len_at,
-        address_count,
-        ARRAY_ADDRESS_ROW,
+        FixedSectionSpec {
+            off_at,
+            len_at,
+            plain_count: address_count,
+            record: ARRAY_ADDRESS_ROW,
+        },
         compressed,
         decoder,
     )
@@ -137,20 +111,24 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8], decoder: &mut Decoder) ->
     let spec_summary = read_fixed_section(
         bytes,
         header,
-        48,
-        56,
-        spec_count,
-        SPEC_SUMMARY_ROW,
+        FixedSectionSpec {
+            off_at: 48,
+            len_at: 56,
+            plain_count: spec_count,
+            record: SPEC_SUMMARY_ROW,
+        },
         compressed,
         decoder,
     );
     let spec_entries = read_fixed_section(
         bytes,
         header,
-        64,
-        72,
-        spec_count,
-        INDEX_ENTRY_ROW,
+        FixedSectionSpec {
+            off_at: 64,
+            len_at: 72,
+            plain_count: spec_count,
+            record: INDEX_ENTRY_ROW,
+        },
         compressed,
         decoder,
     );
@@ -159,20 +137,24 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8], decoder: &mut Decoder) ->
     let chrom_summary = read_fixed_section(
         bytes,
         header,
-        112,
-        120,
-        chrom_count,
-        SPEC_SUMMARY_ROW,
+        FixedSectionSpec {
+            off_at: 112,
+            len_at: 120,
+            plain_count: chrom_count,
+            record: SPEC_SUMMARY_ROW,
+        },
         compressed,
         decoder,
     );
     let chrom_entries = read_fixed_section(
         bytes,
         header,
-        128,
-        136,
-        chrom_count,
-        INDEX_ENTRY_ROW,
+        FixedSectionSpec {
+            off_at: 128,
+            len_at: 136,
+            plain_count: chrom_count,
+            record: INDEX_ENTRY_ROW,
+        },
         compressed,
         decoder,
     );
@@ -203,7 +185,7 @@ fn check_fixed(
 ) -> Result<(), String> {
     let plain = section.as_ref().map_err(|why| why.clone())?;
     let len = plain.len() as u64;
-    if len % record != 0 {
+    if !len.is_multiple_of(record) {
         return Err(format!("length {len} is not a multiple of {record}"));
     }
     if let Some(expected_count) = count {
@@ -222,17 +204,11 @@ struct Section {
     name: &'static str,
     offset: u64,
     size: u64,
-    ok: bool,
 }
 
 impl Section {
     fn new(name: &'static str, offset: u64, size: u64) -> Self {
-        Self {
-            name,
-            offset,
-            size,
-            ok: true,
-        }
+        Self { name, offset, size }
     }
 }
 
@@ -289,7 +265,7 @@ struct HeaderView<'a> {
 impl<'a> HeaderView<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         let header = &bytes[..HEADER_SIZE];
-        let sections = build_sections(header, u64_at(header, 400));
+        let sections = build_sections(header);
         let mut decoder = Decoder::new(&DecompressOptions::default());
         let spec_window_dir = open_window_directory(bytes, header, 32, 40, 384, &mut decoder);
         let chrom_window_dir = open_window_directory(bytes, header, 96, 104, 392, &mut decoder);
@@ -408,7 +384,7 @@ impl<'a> HeaderView<'a> {
         let mut max_z: u32 = 0;
 
         if let Ok(buf) = &self.fixed.spec_summary {
-            for row in buf.chunks_exact(SPEC_SUMMARY_ROW) {
+            for row in buf.as_chunks::<SPEC_SUMMARY_ROW>().0 {
                 let rt = f64::from_le_bytes(row[0..8].try_into().unwrap());
                 let x = u32::from_le_bytes(row[42..46].try_into().unwrap());
                 let y = u32::from_le_bytes(row[46..50].try_into().unwrap());
@@ -500,8 +476,8 @@ fn open_window_directory(
     Ok(top_window)
 }
 
-fn build_sections(header: &[u8], total_file_size: u64) -> Vec<Section> {
-    let mut sections = vec![
+fn build_sections(header: &[u8]) -> Vec<Section> {
+    let sections = vec![
         Section::new(
             "A0 — spectrum m/z-window directory",
             u64_at(header, 32),
@@ -548,28 +524,6 @@ fn build_sections(header: &[u8], total_file_size: u64) -> Vec<Section> {
         Section::new("spec_container", u64_at(header, 208), u64_at(header, 216)),
         Section::new("chrom_container", u64_at(header, 224), u64_at(header, 232)),
     ];
-
-    let trailer_start = total_file_size.saturating_sub(8);
-    for s in &mut sections {
-        s.ok = s
-            .offset
-            .checked_add(s.size)
-            .is_some_and(|end| end <= trailer_start)
-            && (s.size == 0 || s.offset % 8 == 0);
-    }
-
-    let mut order: Vec<usize> = (0..sections.len())
-        .filter(|&i| sections[i].size > 0)
-        .collect();
-    order.sort_by_key(|&i| sections[i].offset);
-    for pair in order.windows(2) {
-        let (l, r) = (pair[0], pair[1]);
-        let end = sections[l].offset.saturating_add(sections[l].size);
-        if end > sections[r].offset {
-            sections[l].ok = false;
-            sections[r].ok = false;
-        }
-    }
 
     sections
 }
@@ -651,16 +605,24 @@ fn section_check_results(view: &HeaderView<'_>) -> [Result<(), String>; 8] {
             SPEC_SUMMARY_ROW as u64,
             Some(spec_count),
         ),
-        check_fixed(&view.fixed.spec_entries, 16, Some(spec_count)),
-        check_fixed(&view.fixed.spec_addresses, 32, None),
+        check_fixed(
+            &view.fixed.spec_entries,
+            INDEX_ENTRY_ROW as u64,
+            Some(spec_count),
+        ),
+        check_fixed(&view.fixed.spec_addresses, ARRAY_ADDRESS_ROW as u64, None),
         view.chrom_window_dir.clone().map(|_| ()),
         check_fixed(
             &view.fixed.chrom_summary,
             SPEC_SUMMARY_ROW as u64,
             Some(chrom_count),
         ),
-        check_fixed(&view.fixed.chrom_entries, 16, Some(chrom_count)),
-        check_fixed(&view.fixed.chrom_addresses, 32, None),
+        check_fixed(
+            &view.fixed.chrom_entries,
+            INDEX_ENTRY_ROW as u64,
+            Some(chrom_count),
+        ),
+        check_fixed(&view.fixed.chrom_addresses, ARRAY_ADDRESS_ROW as u64, None),
     ]
 }
 

@@ -35,24 +35,11 @@ pub(crate) fn parse_chromatogram_list<P: MetadataPolicy>(
         owner_rows.insert(entry.id, entry);
     }
 
-    let list_id = children_lookup
-        .all_ids(TagId::ChromatogramList)
-        .first()
-        .copied()?;
-
-    let chromatogram_ids = children_lookup.ids_for(list_id, TagId::Chromatogram);
-    if chromatogram_ids.is_empty() {
-        return None;
-    }
-
-    let list_rows = owner_rows.get(list_id);
-    let count = get_attr_u32(list_rows, ACC_ATTR_COUNT).map(|v| v as usize);
-    let default_data_processing_ref =
-        get_attr_text(list_rows, ACC_ATTR_DEFAULT_DATA_PROCESSING_REF);
+    let (mut list, chromatogram_ids) = parse_chromatogram_list_header(&owner_rows, children_lookup)?;
 
     let mut param_buffer: Vec<&Metadatum> = Vec::new();
 
-    let chromatograms = chromatogram_ids
+    list.chromatograms = chromatogram_ids
         .iter()
         .enumerate()
         .map(|(index, &chromatogram_id)| {
@@ -65,13 +52,37 @@ pub(crate) fn parse_chromatogram_list<P: MetadataPolicy>(
                 &mut param_buffer,
             )
         })
-        .collect::<Vec<_>>();
+        .collect();
 
-    Some(ChromatogramList {
-        count: count.or(Some(chromatograms.len())),
-        default_data_processing_ref,
-        chromatograms,
-    })
+    Some(list)
+}
+
+pub(crate) fn parse_chromatogram_list_header<'l>(
+    owner_rows: &OwnerRows,
+    children_lookup: &'l ChildrenLookup,
+) -> Option<(ChromatogramList, &'l [u32])> {
+    let list_id = children_lookup
+        .all_ids(TagId::ChromatogramList)
+        .first()
+        .copied()?;
+
+    let chromatogram_ids = children_lookup.ids_for(list_id, TagId::Chromatogram);
+    if chromatogram_ids.is_empty() {
+        return None;
+    }
+
+    let list_rows = owner_rows.get(list_id);
+    let list = ChromatogramList {
+        count: get_attr_u32(list_rows, ACC_ATTR_COUNT)
+            .map(|v| v as usize)
+            .or(Some(chromatogram_ids.len())),
+        default_data_processing_ref: get_attr_text(
+            list_rows,
+            ACC_ATTR_DEFAULT_DATA_PROCESSING_REF,
+        ),
+        chromatograms: Vec::new(),
+    };
+    Some((list, chromatogram_ids))
 }
 
 #[inline]

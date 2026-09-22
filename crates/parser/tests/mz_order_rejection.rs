@@ -1,7 +1,8 @@
 mod common;
 
 use ionic::{
-    IonReader, IonResult, IonWriter, Range, ReadOptions, ScanStream, SectionStorage, WriteOptions,
+    ArrayKind, IonReader, IonResult, IonWriter, Range, ReadOptions, ScanStream, SectionStorage,
+    WriteOptions,
     mzml::structs::{
         BinaryDataArray, BinaryDataArrayList, Chromatogram, CvParam, MzML, NumericArray, Run,
         Spectrum, SpectrumList,
@@ -246,8 +247,10 @@ fn read_mz_range_works_on_sorted_spectrum() {
         IonReader::from_bytes(&bytes, &ReadOptions::default()).expect("open must succeed");
     decoder.require_bounds().expect("window bounds must exist");
     let window = decoder
-        .read_window(
+        .spectrum_window(
             0,
+            ArrayKind::Mz,
+            ArrayKind::Intensity,
             Range {
                 from: 150.0,
                 to: 250.0,

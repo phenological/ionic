@@ -629,7 +629,6 @@ pub(crate) fn new_meta_encoder(level: u8) -> IonResult<Encoder> {
     let options = CompressOptions {
         level: get_supported_compression_level(level.max(1)),
         checksum: false,
-        ..Default::default()
     };
     Encoder::new(&options).map_err(|err| IonError::from(format!("zstd start error: {err:?}")))
 }

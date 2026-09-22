@@ -1,12 +1,9 @@
 use crate::ion::{IonError, IonResult};
 
-#[allow(dead_code)]
 pub(crate) trait DeltaWord: Copy + Default {
     const BYTES: usize;
     fn wrapping_sub(self, rhs: Self) -> Self;
-    fn wrapping_add(self, rhs: Self) -> Self;
     fn to_le_bytes_into(self, out: &mut Vec<u8>);
-    fn from_le_chunk(chunk: &[u8]) -> Self;
 }
 
 impl DeltaWord for u32 {
@@ -14,14 +11,8 @@ impl DeltaWord for u32 {
     fn wrapping_sub(self, rhs: Self) -> Self {
         self.wrapping_sub(rhs)
     }
-    fn wrapping_add(self, rhs: Self) -> Self {
-        self.wrapping_add(rhs)
-    }
     fn to_le_bytes_into(self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.to_le_bytes());
-    }
-    fn from_le_chunk(chunk: &[u8]) -> Self {
-        u32::from_le_bytes(chunk.try_into().unwrap())
     }
 }
 
@@ -30,14 +21,8 @@ impl DeltaWord for u64 {
     fn wrapping_sub(self, rhs: Self) -> Self {
         self.wrapping_sub(rhs)
     }
-    fn wrapping_add(self, rhs: Self) -> Self {
-        self.wrapping_add(rhs)
-    }
     fn to_le_bytes_into(self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.to_le_bytes());
-    }
-    fn from_le_chunk(chunk: &[u8]) -> Self {
-        u64::from_le_bytes(chunk.try_into().unwrap())
     }
 }
 
@@ -72,7 +57,6 @@ impl Dtype {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn byte_stride(self) -> usize {
         match self {
             Self::F64 | Self::I64 => 8,
@@ -101,17 +85,11 @@ impl PackingId {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) enum PackingInput<'a> {
     F32(&'a [f32]),
     F64(&'a [f64]),
-    I16(&'a [i16]),
-    I32(&'a [i32]),
-    I64(&'a [i64]),
-    Bytes(&'a [u8]),
 }
 
-#[allow(dead_code)]
 pub(crate) trait Packing: Send + Sync {
     fn id(&self) -> PackingId;
 
@@ -126,35 +104,11 @@ pub(crate) trait Packing: Send + Sync {
     fn decode(&self, input: &[u8], dtype: Dtype, out: &mut Vec<u8>) -> IonResult<()>;
 }
 
-pub(crate) fn packing_for(
-    array_type: u32,
-    dtype: Dtype,
-    _element_count: usize,
-) -> &'static dyn Packing {
+pub(crate) fn packing_for(array_type: u32, dtype: Dtype) -> &'static dyn Packing {
     use crate::accessions::{
-        INTENSITY_ARRAY, ION_MOBILITY_ARRAY, MEAN_ION_MOBILITY_ARRAY, MZ_ARRAY,
-        RAW_ION_MOBILITY_ARRAY, RAW_ION_MOBILITY_DRIFT_TIME_ARRAY, TIME_ARRAY,
+        ION_MOBILITY_ARRAY, MEAN_ION_MOBILITY_ARRAY, MZ_ARRAY, RAW_ION_MOBILITY_ARRAY,
+        RAW_ION_MOBILITY_DRIFT_TIME_ARRAY, TIME_ARRAY,
     };
-    let env_key = match array_type {
-        MZ_ARRAY => Some("IONIC_MZ_CODEC"),
-        INTENSITY_ARRAY => Some("IONIC_INTENSITY_CODEC"),
-        TIME_ARRAY => Some("IONIC_RT_CODEC"),
-        ION_MOBILITY_ARRAY
-        | MEAN_ION_MOBILITY_ARRAY
-        | RAW_ION_MOBILITY_ARRAY
-        | RAW_ION_MOBILITY_DRIFT_TIME_ARRAY => Some("IONIC_ION_MOBILITY_CODEC"),
-        _ => None,
-    };
-
-    if let Some(key) = env_key
-        && let Ok(v) = std::env::var(key)
-    {
-        return match v.as_str() {
-            "raw" => &raw::RAW,
-            "byte_shuffle" => &byte_shuffle::BYTE_SHUFFLE,
-            _ => &delta_shuffle::DELTA_SHUFFLE,
-        };
-    }
     let is_delta_axis = matches!(
         array_type,
         MZ_ARRAY
@@ -219,11 +173,11 @@ mod tests {
     #[test]
     fn packing_for_dtype_dispatch() {
         assert_eq!(
-            packing_for(MZ_ARRAY, Dtype::F64, 100).id(),
+            packing_for(MZ_ARRAY, Dtype::F64).id(),
             PackingId::DeltaShuffle
         );
-        assert_eq!(packing_for(0, Dtype::F32, 1).id(), PackingId::Raw);
-        assert_eq!(packing_for(0, Dtype::I32, 1).id(), PackingId::Raw);
+        assert_eq!(packing_for(0, Dtype::F32).id(), PackingId::Raw);
+        assert_eq!(packing_for(0, Dtype::I32).id(), PackingId::Raw);
     }
 
     #[test]

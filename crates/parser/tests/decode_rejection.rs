@@ -128,6 +128,24 @@ fn rejects_corrupted_global_meta() {
 }
 
 #[test]
+fn corrupt_spectrum_metadata_fails_on_read_not_on_open() {
+    let mut bytes = encode_to_ion(test_files::tiny_pwiz_11(), 0, false);
+    let off = read_header_u64(&bytes, 160) as usize;
+    let len = read_header_u64(&bytes, 168) as usize;
+    bytes[off + len / 4] ^= 0xFF;
+    let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default())
+        .expect("open must not read spectrum metadata");
+    let err = reader
+        .spectrum_metadata_at(0)
+        .map(|_| ())
+        .expect_err("first group read must fail");
+    assert!(
+        err.contains("group checksum mismatch"),
+        "unexpected decode error: {err}"
+    );
+}
+
+#[test]
 fn rejects_corrupted_trailer() {
     let mut bytes = encode_to_ion(test_files::tiny_pwiz_11(), 9, false);
     let last = bytes.len() - 1;

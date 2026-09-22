@@ -3,13 +3,19 @@ use crate::{
     mzml::{bin_to_mzml, parse_mzml},
 };
 
-use super::options::{ConvertKind, ConvertOptions};
+use super::{
+    options::{ConvertKind, ConvertOptions},
+    reader::IonReader,
+};
 
-fn resolve_kind(bytes: &[u8], kind: ConvertKind) -> ConvertKind {
-    if kind != ConvertKind::Auto {
+fn resolve_kind(wanted: ConvertKind, from_extension: Option<ConvertKind>, is_ion: bool) -> ConvertKind {
+    if wanted != ConvertKind::Auto {
+        return wanted;
+    }
+    if let Some(kind) = from_extension {
         return kind;
     }
-    if bytes.starts_with(&FILE_SIGNATURE) {
+    if is_ion {
         ConvertKind::IonToMzml
     } else {
         ConvertKind::MzmlToIon
@@ -17,12 +23,13 @@ fn resolve_kind(bytes: &[u8], kind: ConvertKind) -> ConvertKind {
 }
 
 pub fn convert(input: &[u8], options: &ConvertOptions) -> IonResult<Vec<u8>> {
-    if resolve_kind(input, options.kind) == ConvertKind::IonToMzml {
-        let mut reader = crate::ion::decoder::decode::IonReader::from_bytes(input, &options.read)?;
+    let is_ion = input.starts_with(&FILE_SIGNATURE);
+    if resolve_kind(options.kind, None, is_ion) == ConvertKind::IonToMzml {
+        let mut reader = IonReader::from_bytes(input, &options.read)?;
         let mzml = reader.to_mzml()?;
         return Ok(bin_to_mzml(&mzml)?);
     }
-    if input.starts_with(&FILE_SIGNATURE) {
+    if is_ion {
         return Err(IonError::from("input is already an ion file"));
     }
     let mzml = parse_mzml(input)?;
@@ -39,10 +46,8 @@ pub fn convert_file(
 ) -> IonResult<()> {
     use std::io::Read;
 
-    use crate::{
-        ion::{encoder::ion_writer::IonWriter, encoder::utilities::FileWriter},
-        mzml::{MzmlReader, structs::MzML},
-    };
+    use crate::mzml::{MzmlReader, structs::MzML};
+    use super::writer::IonWriter;
 
     let input = input.as_ref();
     let output = output.as_ref();
@@ -56,18 +61,10 @@ pub fn convert_file(
     };
     let is_ion = start.starts_with(&FILE_SIGNATURE);
 
-    let kind = if options.kind != ConvertKind::Auto {
-        options.kind
-    } else if let Some(kind) = kind_from_extension(input) {
-        kind
-    } else if is_ion {
-        ConvertKind::IonToMzml
-    } else {
-        ConvertKind::MzmlToIon
-    };
+    let kind = resolve_kind(options.kind, kind_from_extension(input), is_ion);
 
     if kind == ConvertKind::IonToMzml {
-        let mut reader = crate::ion::decoder::decode::IonReader::open(input, &options.read)?;
+        let mut reader = IonReader::open(input, &options.read)?;
         let mzml = reader.to_mzml()?;
         let xml = bin_to_mzml(&mzml)?;
         std::fs::write(output, &xml)?;
@@ -78,10 +75,8 @@ pub fn convert_file(
         return Err(IonError::from("input is already an ion file"));
     }
 
-    let mut file = FileWriter::open_path(output)?;
-    let mut writer = IonWriter::begin(&mut file, &MzML::default(), &options.write)?;
-    writer.write_stream(&mut file, &mut MzmlReader::open(input)?)?;
-    file.flush()?;
+    IonWriter::create(output, &MzML::default(), &options.write)?
+        .write_stream(&mut MzmlReader::open(input)?)?;
     Ok(())
 }
 

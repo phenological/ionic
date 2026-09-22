@@ -5,10 +5,11 @@ use std::{
 };
 
 use crate::ion::{
-    IonError, IonResult,
+    ByteRange, IonError, IonResult,
     decoder::{
-        decode::{Metadatum, MetadatumValue},
+        decode::{Metadatum, MetadatumValue, ReadOptions},
         utilities::{
+            byte_source::ReadBytes,
             common::decompress_zstd_allow_aligned_padding,
             decompression_limit::DecompressionLimit,
             meta_column_layout::MetaColumnLayout,
@@ -16,18 +17,17 @@ use crate::ion::{
         },
     },
     meta_groups::{
-        META_GROUP_ENTRY_SIZE, META_GROUP_HEADER_SIZE, MetaGroupEntry, MetaTotals, group_count_for,
-        group_of_item, item_range_of_group, read_group_header,
+        META_GROUP_ENTRY_SIZE, META_GROUP_HEADER_SIZE, MetaGroupEntry, MetaSection,
+        group_count_for, group_of_item, item_range_of_group, meta_directory_range,
+        read_group_header,
     },
 };
 
 pub(crate) struct MetaGroupReader {
-    section: Arc<[u8]>,
+    source: Arc<dyn ReadBytes>,
+    section: MetaSection,
     directory: Vec<MetaGroupEntry>,
-    group_size: u32,
-    item_count: u64,
-    totals: MetaTotals,
-    payload_end: usize,
+    payload_end: u64,
     compression_codec: u8,
     verify_checksums: bool,
     budget: DecompressionLimit,
@@ -63,90 +63,98 @@ struct GroupCache {
 }
 
 impl MetaGroupReader {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        section: Arc<[u8]>,
-        group_count: u64,
-        group_size: u32,
-        item_count: u64,
-        totals: MetaTotals,
+    pub(crate) fn open(
+        source: Arc<dyn ReadBytes>,
+        section: MetaSection,
         compression_codec: u8,
-        verify_checksums: bool,
-        budget: DecompressionLimit,
-        max_cached_bytes: usize,
+        options: &ReadOptions,
         layout: MetaColumnLayout,
     ) -> IonResult<Self> {
-        if item_count > 0 && group_size == 0 {
+        if section.item_count > 0 && section.group_size == 0 {
             return Err(IonError::from("metadata groups: group size is zero"));
         }
-        if group_count != group_count_for(item_count, group_size) {
+        if section.group_count != group_count_for(section.item_count, section.group_size) {
             return Err(IonError::from(
                 "metadata groups: group count does not match item count",
             ));
         }
-        let directory = read_directory(&section, group_count)?;
-        let payload_end = section.len() - directory.len() * META_GROUP_ENTRY_SIZE;
+        let directory_range = meta_directory_range(section.range, section.group_count)?;
+        let directory: Vec<MetaGroupEntry> = source
+            .read(directory_range)?
+            .as_chunks::<META_GROUP_ENTRY_SIZE>()
+            .0
+            .iter()
+            .map(|entry| MetaGroupEntry::read_from(entry))
+            .collect();
         let mut uncompressed_sum: u64 = 0;
         for entry in &directory {
             uncompressed_sum = uncompressed_sum
                 .checked_add(entry.uncompressed_size)
                 .ok_or_else(|| IonError::from("metadata groups: uncompressed total overflows"))?;
         }
-        if uncompressed_sum != totals.uncompressed {
+        if uncompressed_sum != section.totals.uncompressed {
             return Err(IonError::from(
                 "metadata groups: uncompressed total does not match header",
             ));
         }
+        let payload_end = directory_range.offset - section.range.offset;
         Ok(Self {
+            source,
             section,
             directory,
-            group_size,
-            item_count,
-            totals,
             payload_end,
             compression_codec,
-            verify_checksums,
-            budget,
+            verify_checksums: options.verify_checksums,
+            budget: options.decompression_limit,
             cache: GroupCache {
                 groups: HashMap::new(),
                 order: VecDeque::new(),
                 used_bytes: 0,
-                max_bytes: max_cached_bytes,
+                max_bytes: options.max_cached_bytes,
             },
             layout,
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn read_all(&self) -> IonResult<Vec<Metadatum>> {
-        let mut rows = Vec::new();
-        let mut seen = MetaCounts::default();
-        for group_index in 0..self.directory.len() as u64 {
-            let bytes = self.decode_group(group_index)?;
-            let (meta_count, numeric_count, string_count) = read_group_header(&bytes)?;
-            seen.add(meta_count, numeric_count, string_count);
-            rows.extend(self.parse_group(&bytes, group_index)?);
-        }
-        self.check_totals(&seen)?;
-        Ok(rows)
+        Ok(self.read_all_grouped()?.into_iter().flatten().collect())
     }
 
     pub(crate) fn read_all_grouped(&self) -> IonResult<Vec<Vec<Metadatum>>> {
+        let payloads = self.source.read(ByteRange {
+            offset: self.section.range.offset,
+            length: self.payload_end,
+        })?;
         let mut groups = Vec::with_capacity(self.directory.len());
         let mut seen = MetaCounts::default();
-        for group_index in 0..self.directory.len() as u64 {
-            let bytes = self.decode_group(group_index)?;
+        for (group_index, entry) in self.directory.iter().enumerate() {
+            let range = self.payload_range(entry)?;
+            let start = (range.offset - self.section.range.offset) as usize;
+            let end = start + range.length as usize;
+            let payload = payloads
+                .get(start..end)
+                .ok_or_else(|| IonError::from("metadata groups: payload out of bounds"))?;
+            let bytes = self.decode_payload(entry, payload)?;
             let (meta_count, numeric_count, string_count) = read_group_header(&bytes)?;
             seen.add(meta_count, numeric_count, string_count);
-            groups.push(self.parse_group(&bytes, group_index)?);
+            groups.push(self.parse_group(&bytes, group_index as u64)?);
         }
         self.check_totals(&seen)?;
         Ok(groups)
     }
 
+    pub(crate) fn read_first_group(&self) -> IonResult<Vec<Metadatum>> {
+        if self.directory.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.read_group(0)
+    }
+
     fn check_totals(&self, seen: &MetaCounts) -> IonResult<()> {
-        if seen.rows != self.totals.rows
-            || seen.numeric != self.totals.numeric
-            || seen.string != self.totals.string
+        if seen.rows != self.section.totals.rows
+            || seen.numeric != self.section.totals.numeric
+            || seen.string != self.section.totals.string
         {
             return Err(IonError::from(
                 "metadata groups: row totals do not match header",
@@ -156,10 +164,10 @@ impl MetaGroupReader {
     }
 
     pub(crate) fn read_item(&mut self, item_index: u64) -> IonResult<Vec<Metadatum>> {
-        if item_index >= self.item_count {
+        if item_index >= self.section.item_count {
             return Ok(Vec::new());
         }
-        let group_index = group_of_item(item_index, self.group_size);
+        let group_index = group_of_item(item_index, self.section.group_size);
         let rows = self.get_cached_rows(group_index)?;
         let start = rows.partition_point(|row| (row.item_index as u64) < item_index);
         let end = rows.partition_point(|row| (row.item_index as u64) <= item_index);
@@ -170,11 +178,7 @@ impl MetaGroupReader {
         if let Some(group) = self.cache.groups.get(&group_index) {
             return Ok(group.rows.clone());
         }
-        let rows = {
-            let bytes = self.decode_group(group_index)?;
-            let result: Arc<[Metadatum]> = Arc::from(self.parse_group(&bytes, group_index)?);
-            result
-        };
+        let rows: Arc<[Metadatum]> = Arc::from(self.read_group(group_index)?);
         let footprint = group_footprint(&rows);
         self.store_in_cache(group_index, rows.clone(), footprint);
         Ok(rows)
@@ -196,12 +200,37 @@ impl MetaGroupReader {
         }
     }
 
-    fn decode_group(&self, group_index: u64) -> IonResult<Cow<'_, [u8]>> {
+    fn read_group(&self, group_index: u64) -> IonResult<Vec<Metadatum>> {
         let entry = self
             .directory
             .get(group_index as usize)
             .ok_or_else(|| IonError::from("metadata groups: group index out of range"))?;
-        let payload = self.get_payload(entry)?;
+        let payload = self.source.read(self.payload_range(entry)?)?;
+        let bytes = self.decode_payload(entry, &payload)?;
+        self.parse_group(&bytes, group_index)
+    }
+
+    fn payload_range(&self, entry: &MetaGroupEntry) -> IonResult<ByteRange> {
+        let end = entry
+            .payload_offset
+            .checked_add(entry.payload_size)
+            .ok_or_else(|| IonError::from("metadata groups: payload overflows"))?;
+        if end > self.payload_end {
+            return Err(IonError::from(
+                "metadata groups: payload overlaps the directory",
+            ));
+        }
+        Ok(ByteRange {
+            offset: self.section.range.offset + entry.payload_offset,
+            length: entry.payload_size,
+        })
+    }
+
+    fn decode_payload<'a>(
+        &self,
+        entry: &MetaGroupEntry,
+        payload: &'a [u8],
+    ) -> IonResult<Cow<'a, [u8]>> {
         if self.verify_checksums && crc32fast::hash(payload) != entry.checksum {
             return Err(IonError::from("metadata groups: group checksum mismatch"));
         }
@@ -223,7 +252,7 @@ impl MetaGroupReader {
     fn parse_group(&self, bytes: &[u8], group_index: u64) -> IonResult<Vec<Metadatum>> {
         let (meta_count, numeric_count, string_count) = read_group_header(bytes)?;
         let (item_start, item_end) =
-            item_range_of_group(group_index, self.group_size, self.item_count);
+            item_range_of_group(group_index, self.section.group_size, self.section.item_count);
         let mut rows = parse_metadata(
             &bytes[META_GROUP_HEADER_SIZE..],
             item_end - item_start,
@@ -240,24 +269,6 @@ impl MetaGroupReader {
             row.item_index += item_base;
         }
         Ok(rows)
-    }
-
-    fn get_payload(&self, entry: &MetaGroupEntry) -> IonResult<&[u8]> {
-        let start = usize::try_from(entry.payload_offset)
-            .map_err(|_| IonError::from("metadata groups: payload offset out of range"))?;
-        let size = usize::try_from(entry.payload_size)
-            .map_err(|_| IonError::from("metadata groups: payload size out of range"))?;
-        let end = start
-            .checked_add(size)
-            .ok_or_else(|| IonError::from("metadata groups: payload overflows"))?;
-        if end > self.payload_end {
-            return Err(IonError::from(
-                "metadata groups: payload overlaps the directory",
-            ));
-        }
-        self.section
-            .get(start..end)
-            .ok_or_else(|| IonError::from("metadata groups: payload out of bounds"))
     }
 }
 
@@ -278,39 +289,21 @@ fn group_footprint(rows: &[Metadatum]) -> usize {
     total
 }
 
-fn read_directory(section: &[u8], group_count: u64) -> IonResult<Vec<MetaGroupEntry>> {
-    if group_count == 0 {
-        return Ok(Vec::new());
-    }
-    let group_count = usize::try_from(group_count)
-        .map_err(|_| IonError::from("metadata groups: group count out of range"))?;
-    let directory_size = group_count
-        .checked_mul(META_GROUP_ENTRY_SIZE)
-        .ok_or_else(|| IonError::from("metadata groups: directory overflows"))?;
-    if section.len() < directory_size {
-        return Err(IonError::from(
-            "metadata groups: section smaller than directory",
-        ));
-    }
-    let directory_start = section.len() - directory_size;
-    let mut directory = Vec::with_capacity(group_count);
-    for index in 0..group_count {
-        let at = directory_start + index * META_GROUP_ENTRY_SIZE;
-        directory.push(MetaGroupEntry::read_from(
-            &section[at..at + META_GROUP_ENTRY_SIZE],
-        ));
-    }
-    Ok(directory)
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use super::MetaGroupReader;
     use crate::ion::{
-        DecompressionLimit, IonResult, decoder::utilities::meta_column_layout::MetaColumnLayout,
-        format::CODEC_NONE, meta_groups::MetaTotals,
+        ByteRange, DecompressionLimit, IonResult,
+        decoder::{
+            decode::ReadOptions,
+            utilities::{
+                byte_source::BytesSource, meta_column_layout::MetaColumnLayout,
+            },
+        },
+        format::CODEC_NONE,
+        meta_groups::{MetaSection, MetaTotals},
     };
 
     fn no_totals() -> MetaTotals {
@@ -323,16 +316,26 @@ mod tests {
     }
 
     fn new_reader(group_count: u64, group_size: u32, item_count: u64) -> IonResult<()> {
-        MetaGroupReader::new(
-            Arc::from(&[][..]),
+        let section = MetaSection {
+            range: ByteRange {
+                offset: 0,
+                length: 0,
+            },
             group_count,
             group_size,
             item_count,
-            no_totals(),
+            totals: no_totals(),
+        };
+        MetaGroupReader::open(
+            Arc::new(BytesSource::new(Arc::from(&[][..]))),
+            section,
             CODEC_NONE,
-            false,
-            DecompressionLimit::default(),
-            1024,
+            &ReadOptions {
+                max_cached_bytes: 1024,
+                verify_checksums: false,
+                parallel: true,
+                decompression_limit: DecompressionLimit::default(),
+            },
             MetaColumnLayout::new(),
         )
         .map(|_| ())

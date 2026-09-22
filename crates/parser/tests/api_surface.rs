@@ -57,12 +57,14 @@ fn create_write_spectrum_finish_round_trips_and_open_reads_it_back() {
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(reader.spectrum_count(), 1);
-    let got_mz = reader.array(0, ArrayKind::Mz).expect("array must succeed");
+    let got_mz = reader
+        .spectrum_array(0, ArrayKind::Mz)
+        .expect("spectrum_array must succeed");
     assert_eq!(got_mz, mz);
 }
 
 #[test]
-fn array_into_reuses_the_callers_buffer() {
+fn spectrum_array_into_reuses_the_callers_buffer() {
     let mz: Vec<f64> = (0..30).map(|i| 300.0 + i as f64).collect();
     let intensity: Vec<f64> = (0..30).map(|i| i as f64).collect();
     let spectrum = make_spectrum_f64("scan=1", mz.clone(), intensity);
@@ -76,13 +78,13 @@ fn array_into_reuses_the_callers_buffer() {
     let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap();
     let mut buf = Vec::with_capacity(4096);
     let addr_before = buf.as_ptr();
-    reader.array_into(0, ArrayKind::Mz, &mut buf).unwrap();
+    reader.spectrum_array_into(0, ArrayKind::Mz, &mut buf).unwrap();
 
     assert_eq!(buf, mz);
     assert_eq!(
         buf.as_ptr(),
         addr_before,
-        "array_into must reuse the caller's allocation"
+        "spectrum_array_into must reuse the caller's allocation"
     );
 }
 
@@ -143,7 +145,7 @@ fn scans_in_and_metadata_are_reachable() {
         .unwrap();
     assert_eq!(seen, 1);
 
-    let metadata: MzML = reader.metadata().unwrap();
+    let metadata: MzML = reader.global_metadata().unwrap();
     assert_eq!(metadata.run.id, "test-run");
 
     let summaries: Vec<SpectrumSummary> = reader.spectrum_summaries().unwrap();

@@ -1476,43 +1476,6 @@ fn write_user_params(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn render_cv_param(cv: &CvParam) -> String {
-        let mut writer = Writer::new(Vec::new());
-        write_cv_param(&mut writer, cv).unwrap();
-        String::from_utf8(writer.into_inner()).unwrap()
-    }
-
-    #[test]
-    fn valueless_cvparam_omits_value_attribute_7() {
-        let valueless = CvParam {
-            cv_ref: Some("MS".to_string()),
-            accession: Some("MS:1000511".to_string()),
-            name: "ms level".to_string(),
-            value: None,
-            ..Default::default()
-        };
-        let xml = render_cv_param(&valueless);
-        assert!(
-            !xml.contains("value="),
-            "a valueless cvParam must not emit a value attribute, got: {xml}"
-        );
-
-        let with_value = CvParam {
-            value: Some("x".to_string()),
-            ..valueless
-        };
-        let xml = render_cv_param(&with_value);
-        assert!(
-            xml.contains(r#"value="x""#),
-            "a cvParam with a value must emit it verbatim, got: {xml}"
-        );
-    }
-}
-
 fn write_cv_container(
     writer: &mut Writer<Vec<u8>>,
     tag_name: &str,
@@ -1611,4 +1574,41 @@ fn write_file_checksum(writer: &mut Writer<Vec<u8>>) -> Result<(), BinToMzmlErro
     writer.write_event(Event::End(BytesEnd::new("fileChecksum")))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_cv_param(cv: &CvParam) -> String {
+        let mut writer = Writer::new(Vec::new());
+        write_cv_param(&mut writer, cv).unwrap();
+        String::from_utf8(writer.into_inner()).unwrap()
+    }
+
+    #[test]
+    fn valueless_cvparam_omits_value_attribute_7() {
+        let valueless = CvParam {
+            cv_ref: Some("MS".to_string()),
+            accession: Some("MS:1000511".to_string()),
+            name: "ms level".to_string(),
+            value: None,
+            ..Default::default()
+        };
+        let xml = render_cv_param(&valueless);
+        assert!(
+            !xml.contains("value="),
+            "a valueless cvParam must not emit a value attribute, got: {xml}"
+        );
+
+        let with_value = CvParam {
+            value: Some("x".to_string()),
+            ..valueless
+        };
+        let xml = render_cv_param(&with_value);
+        assert!(
+            xml.contains(r#"value="x""#),
+            "a cvParam with a value must emit it verbatim, got: {xml}"
+        );
+    }
 }

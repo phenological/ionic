@@ -35,24 +35,11 @@ pub(crate) fn parse_spectrum_list<P: MetadataPolicy>(
         owner_rows.insert(entry.id, entry);
     }
 
-    let list_id = children_lookup
-        .all_ids(TagId::SpectrumList)
-        .first()
-        .copied()?;
-
-    let spectrum_ids = children_lookup.ids_for(list_id, TagId::Spectrum);
-    if spectrum_ids.is_empty() {
-        return None;
-    }
-
-    let list_rows = owner_rows.get(list_id);
-    let count = get_attr_u32(list_rows, ACC_ATTR_COUNT).map(|v| v as usize);
-    let default_data_processing_ref =
-        get_attr_text(list_rows, ACC_ATTR_DEFAULT_DATA_PROCESSING_REF);
+    let (mut list, spectrum_ids) = parse_spectrum_list_header(&owner_rows, children_lookup)?;
 
     let mut param_buffer: Vec<&Metadatum> = Vec::new();
 
-    let spectra: Vec<Spectrum> = spectrum_ids
+    list.spectra = spectrum_ids
         .iter()
         .enumerate()
         .map(|(index, &spectrum_id)| {
@@ -67,11 +54,35 @@ pub(crate) fn parse_spectrum_list<P: MetadataPolicy>(
         })
         .collect();
 
-    Some(SpectrumList {
-        count: count.or(Some(spectra.len())),
-        default_data_processing_ref,
-        spectra,
-    })
+    Some(list)
+}
+
+pub(crate) fn parse_spectrum_list_header<'l>(
+    owner_rows: &OwnerRows,
+    children_lookup: &'l ChildrenLookup,
+) -> Option<(SpectrumList, &'l [u32])> {
+    let list_id = children_lookup
+        .all_ids(TagId::SpectrumList)
+        .first()
+        .copied()?;
+
+    let spectrum_ids = children_lookup.ids_for(list_id, TagId::Spectrum);
+    if spectrum_ids.is_empty() {
+        return None;
+    }
+
+    let list_rows = owner_rows.get(list_id);
+    let list = SpectrumList {
+        count: get_attr_u32(list_rows, ACC_ATTR_COUNT)
+            .map(|v| v as usize)
+            .or(Some(spectrum_ids.len())),
+        default_data_processing_ref: get_attr_text(
+            list_rows,
+            ACC_ATTR_DEFAULT_DATA_PROCESSING_REF,
+        ),
+        spectra: Vec::new(),
+    };
+    Some((list, spectrum_ids))
 }
 
 #[inline]

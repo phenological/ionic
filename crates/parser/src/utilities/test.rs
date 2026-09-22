@@ -2,7 +2,8 @@ use core::str::FromStr;
 use std::{fs, path::PathBuf, sync::OnceLock};
 
 use crate::{
-    ion::{ReadOptions, decoder::decode::IonReader},
+    ReadOptions,
+    ion::decoder::decode::IonReader,
     mzml::{
         parse_mzml::parse_mzml,
         structs::{

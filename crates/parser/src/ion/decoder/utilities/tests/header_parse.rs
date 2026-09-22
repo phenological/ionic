@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use crate::ion::{format::FILE_SIGNATURE, utilities::parse_header};
+use crate::ion::utilities::Header;
 
 const PATH: &str = "data/ion/test.ion";
 
@@ -12,10 +12,8 @@ fn read_bytes(path: &str) -> Vec<u8> {
 #[test]
 fn check_header() {
     let bytes = read_bytes(PATH);
-    let header = parse_header(&bytes).expect("parse_header failed");
+    let header = Header::parse(&bytes).expect("Header::parse failed");
 
-    assert_eq!(header.file_signature, FILE_SIGNATURE);
-    assert_eq!(header.endianness_flag, 0);
     assert_eq!(header.spectrum_count, 2);
     assert_eq!(header.chrom_count, 2);
     assert_eq!(header.spec_meta_count, 71);

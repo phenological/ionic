@@ -26,11 +26,6 @@ pub struct FileWriter {
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 impl FileWriter {
-    #[allow(dead_code)]
-    pub fn open(path: &str) -> IonResult<Self> {
-        Self::open_path(Path::new(path))
-    }
-
     pub fn open_path(path: &Path) -> IonResult<Self> {
         let file = File::create(path).map_err(|err| {
             IonError::from(format!(

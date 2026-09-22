@@ -1,10 +1,11 @@
 use crate::ion::{
-    IonResult,
+    ByteRange, IonResult,
     decoder::decode::INDEX_ENTRY_BYTES,
     encoder::encode::{CHROM_SUMMARY_SIZE, SPEC_SUMMARY_SIZE},
     format::{
         CODEC_ZSTD, CURRENT_VERSION, FILE_SIGNATURE, HEADER_SIZE, allow_compression, allow_version,
     },
+    meta_groups::{MetaSection, MetaTotals},
 };
 
 const BLOCK_DIRECTORY_ENTRY_SIZE_U64: u64 = 32;
@@ -124,12 +125,8 @@ const _: () = assert!(HEADER_CHROM_META_CRC32 == 1012);
 const _: () = assert!(HEADER_GLOBAL_META_CRC32 == 1016);
 const _: () = assert!(HEADER_CRC32 == 1020);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Header {
-    #[allow(dead_code)]
-    pub(crate) file_signature: [u8; 8],
-    #[allow(dead_code)]
-    pub(crate) endianness_flag: u8,
     pub(crate) format_version: u16,
     pub(crate) compression_codec: u8,
     pub(crate) compression_level: u8,
@@ -202,85 +199,6 @@ pub(crate) struct Header {
     pub(crate) header_crc32: u32,
 }
 
-impl Default for Header {
-    fn default() -> Self {
-        Self {
-            file_signature: [0u8; 8],
-            endianness_flag: 0,
-            format_version: 0,
-            compression_codec: 0,
-            compression_level: 0,
-            default_array_filter: 0,
-            target_block_uncompressed_bytes: 0,
-            off_spec_summary: 0,
-            len_spec_summary: 0,
-            off_chrom_summary: 0,
-            len_chrom_summary: 0,
-            off_spec_entries: 0,
-            len_spec_entries: 0,
-            off_spec_array_addresses: 0,
-            len_spec_array_addresses: 0,
-            off_chrom_entries: 0,
-            len_chrom_entries: 0,
-            off_chrom_array_addresses: 0,
-            len_chrom_array_addresses: 0,
-            off_spec_meta: 0,
-            len_spec_meta: 0,
-            off_chrom_meta: 0,
-            len_chrom_meta: 0,
-            off_global_meta: 0,
-            len_global_meta: 0,
-            off_spec_container: 0,
-            len_spec_container: 0,
-            off_chrom_container: 0,
-            len_chrom_container: 0,
-            spec_block_count: 0,
-            chrom_block_count: 0,
-            spectrum_count: 0,
-            chrom_count: 0,
-            spec_meta_count: 0,
-            spec_meta_numeric_count: 0,
-            spec_meta_string_count: 0,
-            chrom_meta_count: 0,
-            chrom_meta_numeric_count: 0,
-            chrom_meta_string_count: 0,
-            global_meta_count: 0,
-            global_meta_numeric_count: 0,
-            global_meta_string_count: 0,
-            spec_array_type_count: 0,
-            chrom_array_type_count: 0,
-            spec_meta_uncompressed_bytes: 0,
-            chrom_meta_uncompressed_bytes: 0,
-            global_meta_uncompressed_bytes: 0,
-            total_file_size: 0,
-            meta_group_size: 0,
-            spec_meta_group_count: 0,
-            chrom_meta_group_count: 0,
-            spec_summary_crc32: 0,
-            spec_entries_crc32: 0,
-            spec_array_addresses_crc32: 0,
-            chrom_summary_crc32: 0,
-            chrom_entries_crc32: 0,
-            chrom_array_addresses_crc32: 0,
-            target_mz_window: 0,
-            spec_directory_crc32: 0,
-            chrom_directory_crc32: 0,
-            off_spec_window_directory: 0,
-            len_spec_window_directory: 0,
-            off_chrom_window_directory: 0,
-            len_chrom_window_directory: 0,
-            plain_len_spec_window_directory: 0,
-            plain_len_chrom_window_directory: 0,
-            spec_window_directory_crc32: 0,
-            chrom_window_directory_crc32: 0,
-            spec_meta_crc32: 0,
-            chrom_meta_crc32: 0,
-            global_meta_crc32: 0,
-            header_crc32: 0,
-        }
-    }
-}
-
 impl Header {
     pub(crate) fn parse(bytes: &[u8]) -> IonResult<Self> {
         if bytes.len() < HEADER_SIZE {
@@ -289,12 +207,10 @@ impl Header {
 
         let h = &bytes[..HEADER_SIZE];
 
-        let file_signature = <[u8; 8]>::try_from(&h[0..8]).unwrap();
-        if file_signature != FILE_SIGNATURE {
+        if h[0..8] != FILE_SIGNATURE {
             return Err("header: invalid file signature".into());
         }
-        let endianness_flag = h[8];
-        if endianness_flag != 0 {
+        if h[8] != 0 {
             return Err("header: expected little-endian endianness_flag=0".into());
         }
 
@@ -401,8 +317,6 @@ impl Header {
         let header_crc32 = read_u32_at(h, HEADER_CRC32);
 
         let header = Header {
-            file_signature,
-            endianness_flag,
             format_version,
             compression_codec,
             compression_level,
@@ -485,6 +399,42 @@ impl Header {
         }
 
         Ok(header)
+    }
+
+    pub(crate) fn spec_meta_section(&self) -> MetaSection {
+        MetaSection {
+            range: ByteRange {
+                offset: self.off_spec_meta,
+                length: self.len_spec_meta,
+            },
+            group_count: self.spec_meta_group_count,
+            group_size: self.meta_group_size,
+            item_count: self.spectrum_count,
+            totals: MetaTotals {
+                rows: self.spec_meta_count,
+                numeric: self.spec_meta_numeric_count,
+                string: self.spec_meta_string_count,
+                uncompressed: self.spec_meta_uncompressed_bytes,
+            },
+        }
+    }
+
+    pub(crate) fn chrom_meta_section(&self) -> MetaSection {
+        MetaSection {
+            range: ByteRange {
+                offset: self.off_chrom_meta,
+                length: self.len_chrom_meta,
+            },
+            group_count: self.chrom_meta_group_count,
+            group_size: self.meta_group_size,
+            item_count: self.chrom_count,
+            totals: MetaTotals {
+                rows: self.chrom_meta_count,
+                numeric: self.chrom_meta_numeric_count,
+                string: self.chrom_meta_string_count,
+                uncompressed: self.chrom_meta_uncompressed_bytes,
+            },
+        }
     }
 
     pub(crate) fn write(&self, buf: &mut [u8]) {
@@ -696,10 +646,6 @@ impl Header {
     }
 }
 
-pub(crate) fn parse_header(bytes: &[u8]) -> IonResult<Header> {
-    Header::parse(bytes)
-}
-
 #[inline]
 pub fn version_of(bytes: &[u8]) -> Option<u16> {
     let end = HEADER_FORMAT_VERSION_OFFSET + 2;
@@ -739,18 +685,6 @@ pub fn set_version(header: &mut [u8]) -> IonResult<bool> {
     let new_crc = crc32fast::hash(&header[0..HEADER_CRC32]);
     write_u32_at(header, HEADER_CRC32, new_crc);
     Ok(true)
-}
-
-#[inline]
-#[allow(dead_code)]
-pub(crate) fn get_total_file_size_from_header(bytes: &[u8]) -> Option<u64> {
-    let end = HEADER_TOTAL_FILE_SIZE + 8;
-    if bytes.len() < end {
-        return None;
-    }
-    let mut buf = [0u8; 8];
-    buf.copy_from_slice(&bytes[HEADER_TOTAL_FILE_SIZE..end]);
-    Some(u64::from_le_bytes(buf))
 }
 
 pub(crate) fn check_section_layout(h: &Header) -> Vec<String> {
@@ -1027,8 +961,6 @@ mod tests {
 
     fn header_bytes_with(build: impl FnOnce(&mut Header)) -> [u8; HEADER_SIZE] {
         let mut header = Header {
-            file_signature: FILE_SIGNATURE,
-            endianness_flag: 0,
             format_version: CURRENT_VERSION,
             ..Header::default()
         };
@@ -1168,8 +1100,6 @@ mod tests {
     #[test]
     fn write_then_parse_round_trips_every_field() {
         let mut original = Header {
-            file_signature: FILE_SIGNATURE,
-            endianness_flag: 0,
             format_version: CURRENT_VERSION,
             compression_codec: 1,
             compression_level: 3,
@@ -1250,8 +1180,6 @@ mod tests {
 
         let parsed = Header::parse(&buf).expect("round-trip parse failed");
 
-        assert_eq!(parsed.file_signature, original.file_signature);
-        assert_eq!(parsed.endianness_flag, original.endianness_flag);
         assert_eq!(parsed.format_version, original.format_version);
         assert_eq!(parsed.compression_codec, original.compression_codec);
         assert_eq!(parsed.compression_level, original.compression_level);

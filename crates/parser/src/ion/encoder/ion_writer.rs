@@ -461,7 +461,7 @@ fn schema_of_chromatogram_list(list: &ChromatogramList) -> ChromatogramList {
     }
 }
 
-pub(crate) struct IonWriter {
+pub(crate) struct IonEncoder {
     config: WriteOptions,
     compressor: Encoder,
     collector: MetaCollector,
@@ -474,26 +474,26 @@ pub(crate) struct IonWriter {
     last_spec_rt: f64,
 }
 
-impl IonWriter {
+impl IonEncoder {
     pub(crate) fn begin(
         output: &mut dyn WriteBytes,
         metadata: &MzML,
-        config: &WriteOptions,
+        options: &WriteOptions,
     ) -> IonResult<Self> {
-        let config = *config;
-        allow_compression_level(config.compression_level)?;
+        let options = *options;
+        allow_compression_level(options.compression_level)?;
         output.write(&[0u8; HEADER_SIZE])?;
 
-        let compressor = new_meta_encoder(config.compression_level)?;
+        let compressor = new_meta_encoder(options.compression_level)?;
 
         let mut writer = Self {
-            config,
+            config: options,
             compressor,
             collector: MetaCollector::new(),
             spec_list_id: LOCAL_LIST_NODE_ID,
             chrom_list_id: LOCAL_LIST_NODE_ID,
-            spec_stream: ItemStream::new(256, SPEC_SUMMARY_SIZE, 256, config, true)?,
-            chrom_stream: ItemStream::new(32, CHROM_SUMMARY_SIZE, 32, config, false)?,
+            spec_stream: ItemStream::new(256, SPEC_SUMMARY_SIZE, 256, options, true)?,
+            chrom_stream: ItemStream::new(32, CHROM_SUMMARY_SIZE, 32, options, false)?,
             spec_schema: None,
             chrom_schema: None,
             last_spec_rt: f64::NEG_INFINITY,
@@ -795,10 +795,10 @@ impl IonWriter {
 
 pub(crate) fn write_mzml_to_ion(
     mzml: &MzML,
-    config: &WriteOptions,
+    options: &WriteOptions,
     output: &mut dyn WriteBytes,
 ) -> IonResult<()> {
-    let mut writer = IonWriter::begin(output, mzml, config)?;
+    let mut writer = IonEncoder::begin(output, mzml, options)?;
     writer.write_mzml(output, mzml)?;
     writer.finish(output, mzml)
 }
@@ -863,9 +863,7 @@ mod tests {
             ..Default::default()
         };
         let mut output = Vec::new();
-        let mut writer = IonWriter::begin(&mut output, &MzML::default(), &config).unwrap();
-        // Flush every sealed block immediately, so the pending queue can never hold
-        // more than the block currently being assembled.
+        let mut writer = IonEncoder::begin(&mut output, &MzML::default(), &config).unwrap();
         writer.spec_stream.set_max_pending_bytes(1);
 
         let spectrum_count = 500;
@@ -877,9 +875,6 @@ mod tests {
             max_pending_bytes_seen = max_pending_bytes_seen.max(writer.spec_stream.pending_bytes());
         }
 
-        // The bytes held by not-yet-flushed blocks must stay within one block's
-        // worth of data, regardless of how many spectra have been pushed so far:
-        // push_spectrum must stream one block at a time, not buffer the whole file.
         assert!(
             max_pending_bytes_seen <= block_size,
             "pending bytes ({max_pending_bytes_seen}) exceeded one block ({block_size}) \
@@ -893,8 +888,8 @@ mod tests {
                 .unwrap();
         assert_eq!(reader.spectrum_count(), spectrum_count as u64);
         for i in [0usize, spectrum_count / 2, spectrum_count - 1] {
-            let spectrum = reader.spectrum(i).unwrap();
-            let mz = reader.array(i, crate::ion::ArrayKind::Mz).unwrap();
+            let spectrum = reader.spectrum_metadata_at(i).unwrap();
+            let mz = reader.spectrum_array(i, crate::ion::ArrayKind::Mz).unwrap();
             assert_eq!(spectrum.index, Some(i as u32));
             assert_eq!(mz, vec![100.0 + i as f64, 101.0 + i as f64, 102.0 + i as f64]);
         }

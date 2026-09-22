@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::{
     ion::{
         IonResult,
-        encoder::{ion_writer::IonWriter as LowWriter, scan_stream::ScanStream, utilities::WriteBytes},
+        encoder::{ion_writer::IonEncoder, scan_stream::ScanStream, utilities::WriteBytes},
     },
     mzml::structs::{Chromatogram, MzML, Spectrum},
 };
@@ -14,34 +14,34 @@ use crate::ion::encoder::utilities::FileWriter;
 
 use super::options::WriteOptions;
 
-enum Sink<'out> {
+enum Output<'out> {
     Borrowed(&'out mut dyn WriteBytes),
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
     Owned(FileWriter),
 }
 
-impl WriteBytes for Sink<'_> {
+impl WriteBytes for Output<'_> {
     fn write(&mut self, bytes: &[u8]) -> IonResult<()> {
         match self {
-            Sink::Borrowed(output) => output.write(bytes),
+            Output::Borrowed(output) => output.write(bytes),
             #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-            Sink::Owned(file) => file.write(bytes),
+            Output::Owned(file) => file.write(bytes),
         }
     }
 
     fn patch(&mut self, at: u64, bytes: &[u8]) -> IonResult<()> {
         match self {
-            Sink::Borrowed(output) => output.patch(at, bytes),
+            Output::Borrowed(output) => output.patch(at, bytes),
             #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-            Sink::Owned(file) => file.patch(at, bytes),
+            Output::Owned(file) => file.patch(at, bytes),
         }
     }
 
     fn position(&mut self) -> IonResult<u64> {
         match self {
-            Sink::Borrowed(output) => output.position(),
+            Output::Borrowed(output) => output.position(),
             #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-            Sink::Owned(file) => file.position(),
+            Output::Owned(file) => file.position(),
         }
     }
 }
@@ -54,8 +54,8 @@ fn strip_lists(metadata: &MzML) -> MzML {
 }
 
 pub struct IonWriter<'out> {
-    sink: Sink<'out>,
-    low: LowWriter,
+    output: Output<'out>,
+    encoder: IonEncoder,
     metadata: MzML,
 }
 
@@ -67,11 +67,11 @@ impl IonWriter<'static> {
         options: &WriteOptions,
     ) -> IonResult<Self> {
         let file = FileWriter::open_path(path.as_ref())?;
-        let mut sink = Sink::Owned(file);
-        let low = LowWriter::begin(&mut sink, metadata, options)?;
+        let mut output = Output::Owned(file);
+        let encoder = IonEncoder::begin(&mut output, metadata, options)?;
         Ok(Self {
-            sink,
-            low,
+            output,
+            encoder,
             metadata: strip_lists(metadata),
         })
     }
@@ -83,32 +83,36 @@ impl<'out> IonWriter<'out> {
         metadata: &MzML,
         options: &WriteOptions,
     ) -> IonResult<Self> {
-        let mut sink = Sink::Borrowed(output);
-        let low = LowWriter::begin(&mut sink, metadata, options)?;
+        let mut output = Output::Borrowed(output);
+        let encoder = IonEncoder::begin(&mut output, metadata, options)?;
         Ok(Self {
-            sink,
-            low,
+            output,
+            encoder,
             metadata: strip_lists(metadata),
         })
     }
 
     pub fn write_spectrum(&mut self, spectrum: &Spectrum) -> IonResult<()> {
-        self.low.push_spectrum(&mut self.sink, spectrum)
+        self.encoder.push_spectrum(&mut self.output, spectrum)
     }
 
     pub fn write_chromatogram(&mut self, chromatogram: &Chromatogram) -> IonResult<()> {
-        self.low.push_chromatogram(&mut self.sink, chromatogram)
+        self.encoder.push_chromatogram(&mut self.output, chromatogram)
     }
 
-    pub fn write_stream(&mut self, scans: &mut dyn ScanStream) -> IonResult<()> {
-        self.low.write_stream(&mut self.sink, scans)
+    pub fn write_stream(mut self, scans: &mut dyn ScanStream) -> IonResult<()> {
+        self.encoder.write_stream(&mut self.output, scans)?;
+        self.flush_file()
     }
 
     pub fn finish(mut self) -> IonResult<()> {
-        self.low.finish(&mut self.sink, &self.metadata)?;
+        self.encoder.finish(&mut self.output, &self.metadata)?;
+        self.flush_file()
+    }
 
+    fn flush_file(&mut self) -> IonResult<()> {
         #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-        if let Sink::Owned(file) = &mut self.sink {
+        if let Output::Owned(file) = &mut self.output {
             file.flush()?;
         }
 

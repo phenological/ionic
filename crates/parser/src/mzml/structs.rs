@@ -17,23 +17,6 @@ pub struct MzML {
     pub run: Run,
 }
 
-impl MzML {
-    pub fn from_spectra(spectra: Vec<Spectrum>) -> Self {
-        let count = spectra.len();
-        Self {
-            run: Run {
-                spectrum_list: Some(SpectrumList {
-                    count: Some(count),
-                    spectra,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CvList {
     pub count: Option<usize>,

@@ -1,7 +1,7 @@
 use crate::{
     accessions as acc_const,
     ion::attr_meta::parse_accession_tail,
-    mzml::structs::{CvParam, MzML, NumericArray, Spectrum},
+    mzml::structs::{CvParam, Spectrum},
 };
 
 #[inline]
@@ -52,82 +52,6 @@ pub struct ScanSummary {
     pub position_x: u32,
     pub position_y: u32,
     pub position_z: u32,
-}
-
-#[cfg(test)]
-pub trait ScanSource {
-    fn for_each_summary(&mut self, callback: &mut dyn FnMut(usize, ScanSummary));
-    fn load_scan(&mut self, index: usize, mz: &mut Vec<f64>, intensity: &mut Vec<f64>) -> bool;
-
-    fn for_each_in_range<F>(&mut self, rt_min: f64, rt_max: f64, ms_level: u8, mut callback: F)
-    where
-        Self: Sized,
-        F: FnMut(&ScanSummary, &[f64], &[f64]),
-    {
-        let mut matching: Vec<(usize, ScanSummary)> = Vec::new();
-        self.for_each_summary(&mut |index, summary| {
-            if summary.rt >= rt_min
-                && summary.rt <= rt_max
-                && (ms_level == 0 || summary.ms_level == ms_level)
-            {
-                matching.push((index, summary));
-            }
-        });
-        let mut mz = Vec::new();
-        let mut intensity = Vec::new();
-        for (index, summary) in &matching {
-            if self.load_scan(*index, &mut mz, &mut intensity) {
-                callback(summary, &mz, &intensity);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-impl ScanSource for MzML {
-    fn for_each_summary(&mut self, callback: &mut dyn FnMut(usize, ScanSummary)) {
-        let Some(list) = self.run.spectrum_list.as_ref() else {
-            return;
-        };
-        summary_from_spectra(&list.spectra, callback);
-    }
-
-    fn load_scan(&mut self, index: usize, mz: &mut Vec<f64>, intensity: &mut Vec<f64>) -> bool {
-        let spectra = self
-            .run
-            .spectrum_list
-            .as_ref()
-            .map(|l| l.spectra.as_slice())
-            .unwrap_or_default();
-        load_scan_from_spectra(spectra, index, mz, intensity)
-    }
-
-    fn for_each_in_range<F>(&mut self, rt_min: f64, rt_max: f64, ms_level: u8, mut callback: F)
-    where
-        Self: Sized,
-        F: FnMut(&ScanSummary, &[f64], &[f64]),
-    {
-        let spectra = self
-            .run
-            .spectrum_list
-            .as_ref()
-            .map(|l| l.spectra.as_slice())
-            .unwrap_or_default();
-        let mut mz = Vec::new();
-        let mut intensity = Vec::new();
-        for (index, spectrum) in spectra.iter().enumerate() {
-            let summary = summary_from_spectrum(spectrum);
-            if summary.rt < rt_min
-                || summary.rt > rt_max
-                || (ms_level != 0 && summary.ms_level != ms_level)
-            {
-                continue;
-            }
-            if load_scan_from_spectra(spectra, index, &mut mz, &mut intensity) {
-                callback(&summary, &mz, &intensity);
-            }
-        }
-    }
 }
 
 pub(crate) fn summary_from_spectrum(spectrum: &Spectrum) -> ScanSummary {
@@ -229,16 +153,6 @@ pub(crate) fn summary_from_spectrum(spectrum: &Spectrum) -> ScanSummary {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn summary_from_spectra(
-    spectra: &[Spectrum],
-    callback: &mut dyn FnMut(usize, ScanSummary),
-) {
-    for (index, spectrum) in spectra.iter().enumerate() {
-        callback(index, summary_from_spectrum(spectrum));
-    }
-}
-
 #[inline]
 fn rt_from_params(params: &[CvParam]) -> Option<(f64, TimeUnit)> {
     for param in params {
@@ -276,75 +190,6 @@ fn parse_f64(s: Option<&str>) -> f64 {
 #[inline]
 fn parse_u32(s: Option<&str>) -> u32 {
     s.and_then(|v| v.parse().ok()).unwrap_or(0)
-}
-
-#[cfg(test)]
-pub(crate) fn binary_pair(spectrum: &Spectrum) -> Option<(&NumericArray, &NumericArray)> {
-    let list = spectrum.binary_data_array_list.as_ref()?;
-    let mut mz = None;
-    let mut intensity = None;
-    for array in &list.binary_data_arrays {
-        if mz.is_some() && intensity.is_some() {
-            break;
-        }
-        let mut is_mz = false;
-        let mut is_intensity = false;
-        for param in &array.cv_params {
-            match acc(param.accession.as_deref()) {
-                acc_const::MZ_ARRAY => is_mz = true,
-                acc_const::INTENSITY_ARRAY => is_intensity = true,
-                _ => {}
-            }
-            if is_mz && is_intensity {
-                break;
-            }
-        }
-        if is_mz {
-            mz = array.binary.as_ref();
-        }
-        if is_intensity {
-            intensity = array.binary.as_ref();
-        }
-    }
-    Some((mz?, intensity?))
-}
-
-#[cfg(test)]
-pub(crate) fn load_scan_from_spectra(
-    spectra: &[Spectrum],
-    index: usize,
-    mz: &mut Vec<f64>,
-    intensity: &mut Vec<f64>,
-) -> bool {
-    let Some(spectrum) = spectra.get(index) else {
-        return false;
-    };
-    let Some((mz_data, int_data)) = binary_pair(spectrum) else {
-        return false;
-    };
-    let len = mz_data.len().min(int_data.len());
-    if len == 0 {
-        return false;
-    }
-    mz.clear();
-    mz.reserve(len);
-    extend_from_binary(mz_data, mz, len);
-    intensity.clear();
-    intensity.reserve(len);
-    extend_from_binary(int_data, intensity, len);
-    true
-}
-
-#[cfg(test)]
-fn extend_from_binary(data: &NumericArray, out: &mut Vec<f64>, max: usize) {
-    match data {
-        NumericArray::F64(v) => out.extend_from_slice(&v[..max]),
-        NumericArray::F32(v) => out.extend(v[..max].iter().map(|&x| x as f64)),
-        NumericArray::I16(v) => out.extend(v[..max].iter().map(|&x| x as f64)),
-        NumericArray::I32(v) => out.extend(v[..max].iter().map(|&x| x as f64)),
-        NumericArray::I64(v) => out.extend(v[..max].iter().map(|&x| x as f64)),
-        NumericArray::F16(v) => out.extend(v[..max].iter().copied().map(f16_bits_to_f64)),
-    }
 }
 
 pub(crate) fn f16_bits_to_f64(bits: u16) -> f64 {

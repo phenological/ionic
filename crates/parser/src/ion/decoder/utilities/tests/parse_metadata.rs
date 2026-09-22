@@ -4,7 +4,7 @@ use crate::ion::{
     DecompressionLimit,
     attr_meta::*,
     decoder::decode::{Metadatum, MetadatumValue},
-    utilities::{parse_header, parse_metadata},
+    utilities::{Header, parse_metadata},
 };
 use crate::mzml::schema::TagId;
 
@@ -73,7 +73,7 @@ fn parse_metadata_section_from_test_file(
 #[test]
 fn check_first_spectrum() {
     let header_bytes = read_bytes(PATH);
-    let header = parse_header(&header_bytes).expect("parse_header failed");
+    let header = Header::parse(&header_bytes).expect("Header::parse failed");
     let spec_meta = parse_metadata_section_from_test_file(
         header.off_spec_meta,
         header.off_chrom_meta,
@@ -278,7 +278,7 @@ fn check_first_spectrum() {
 #[test]
 fn check_second_spectrum() {
     let header_bytes = read_bytes(PATH);
-    let header = parse_header(&header_bytes).expect("parse_header failed");
+    let header = Header::parse(&header_bytes).expect("Header::parse failed");
     let spec_meta = parse_metadata_section_from_test_file(
         header.off_spec_meta,
         header.off_chrom_meta,
@@ -614,7 +614,7 @@ fn assert_chromatogram_binary_data_array_list(meta: &[Metadatum], item_index: u3
 #[test]
 fn check_first_chromatogram() {
     let header_bytes = read_bytes(PATH);
-    let header = parse_header(&header_bytes).expect("parse_header failed");
+    let header = Header::parse(&header_bytes).expect("Header::parse failed");
     let chrom_meta = parse_metadata_section_from_test_file(
         header.off_chrom_meta,
         header.off_global_meta,
@@ -676,7 +676,7 @@ fn check_first_chromatogram() {
 #[test]
 fn check_second_chromatogram() {
     let header_bytes = read_bytes(PATH);
-    let header = parse_header(&header_bytes).expect("parse_header failed");
+    let header = Header::parse(&header_bytes).expect("Header::parse failed");
     let chrom_meta = parse_metadata_section_from_test_file(
         header.off_chrom_meta,
         header.off_global_meta,

@@ -29,12 +29,12 @@ impl ArrayAddress {
 }
 
 #[derive(Debug, Clone)]
-pub struct ArrayGroup {
-    pub array_type: u32,
-    pub array_cv_code: u8,
-    pub dtype: u8,
-    pub array_filter: u8,
-    pub refs: Vec<ArrayAddress>,
+pub(crate) struct ArrayGroup {
+    pub(crate) array_type: u32,
+    pub(crate) array_cv_code: u8,
+    pub(crate) dtype: u8,
+    pub(crate) array_filter: u8,
+    pub(crate) refs: Vec<ArrayAddress>,
 }
 
 #[derive(Clone)]
@@ -223,41 +223,6 @@ pub(crate) fn group_arrays(refs: &[ArrayAddress]) -> IonResult<Vec<ArrayGroup>> 
     Ok(groups)
 }
 
-pub(crate) fn read_group_decoded_bytes(
-    group: &ArrayGroup,
-    container: &mut BlockReader<DefaultBlockProcessor>,
-) -> IonResult<Vec<u8>> {
-    if let [array_address] = group.refs.as_slice() {
-        let (element_offset, count, stride) = address_read_params(array_address);
-        let raw = container.get_array_bytes_from_block(
-            array_address.block_id,
-            element_offset,
-            count,
-            stride,
-            "read_group_decoded_bytes",
-        )?;
-        let unfiltered = unfilter_array_bytes(raw, group.dtype, group.array_filter)?;
-        return Ok(unfiltered.into_owned());
-    }
-
-    let mut decoded = Vec::new();
-    for array_address in &group.refs {
-        let (element_offset, count, stride) = address_read_params(array_address);
-        let raw = container.get_array_bytes_from_block(
-            array_address.block_id,
-            element_offset,
-            count,
-            stride,
-            "read_group_decoded_bytes",
-        )?;
-        let unfiltered = unfilter_array_bytes(raw, group.dtype, group.array_filter)?;
-        decoded.reserve(unfiltered.len());
-        decoded.extend_from_slice(&unfiltered);
-    }
-
-    Ok(decoded)
-}
-
 #[inline]
 pub(crate) fn dtype_stride(dtype: u8) -> usize {
     match dtype {
@@ -312,50 +277,56 @@ pub(crate) fn decode_into(
     match dtype {
         FILE_DTYPE_F64 => {
             buf.reserve(bytes.len() / 8);
-            buf.extend(
-                bytes
-                    .chunks_exact(8)
-                    .map(|c| f64::from_le_bytes(c.try_into().unwrap())),
-            );
+            buf.extend(bytes.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)));
         }
         FILE_DTYPE_F32 => {
             buf.reserve(bytes.len() / 4);
             buf.extend(
                 bytes
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64),
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c) as f64),
             );
         }
         FILE_DTYPE_F16 => {
             buf.reserve(bytes.len() / 2);
             buf.extend(
                 bytes
-                    .chunks_exact(2)
-                    .map(|c| f16_bits_to_f64(u16::from_le_bytes(c.try_into().unwrap()))),
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| f16_bits_to_f64(u16::from_le_bytes(*c))),
             );
         }
         FILE_DTYPE_I16 => {
             buf.reserve(bytes.len() / 2);
             buf.extend(
                 bytes
-                    .chunks_exact(2)
-                    .map(|c| i16::from_le_bytes(c.try_into().unwrap()) as f64),
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| i16::from_le_bytes(*c) as f64),
             );
         }
         FILE_DTYPE_I32 => {
             buf.reserve(bytes.len() / 4);
             buf.extend(
                 bytes
-                    .chunks_exact(4)
-                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f64),
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| i32::from_le_bytes(*c) as f64),
             );
         }
         FILE_DTYPE_I64 => {
             buf.reserve(bytes.len() / 8);
             buf.extend(
                 bytes
-                    .chunks_exact(8)
-                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f64),
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| i64::from_le_bytes(*c) as f64),
             );
         }
         _ => {
@@ -368,82 +339,26 @@ pub(crate) fn decode_into(
     Ok(())
 }
 
-#[cfg(test)]
-fn collect_entry_array_addresses(
-    entry_bytes: &[u8],
-    address_bytes: &[u8],
-) -> Option<Vec<ArrayAddress>> {
-    let ref_start =
-        usize::try_from(u64::from_le_bytes(entry_bytes[0..8].try_into().unwrap())).ok()?;
-    let address_count =
-        usize::try_from(u64::from_le_bytes(entry_bytes[8..16].try_into().unwrap())).ok()?;
-    let start = ref_start.checked_mul(ARRAY_ADDRESS_BYTES)?;
-    let span = address_count.checked_mul(ARRAY_ADDRESS_BYTES)?;
-    let end = start.checked_add(span)?;
-    let mut refs = Vec::with_capacity(address_count);
-    for bytes in address_bytes
-        .get(start..end)?
-        .chunks_exact(ARRAY_ADDRESS_BYTES)
-    {
-        refs.push(parse_array_address(bytes));
-    }
-    Some(refs)
-}
-
-#[cfg(test)]
-pub(crate) fn read_scan_arrays(
-    container: &mut dyn ContainerAccess,
-    entry_bytes: &[u8],
-    address_bytes: &[u8],
-    mz: &mut Vec<f64>,
-    intensity: &mut Vec<f64>,
-) -> bool {
-    mz.clear();
-    intensity.clear();
-    let Some(refs) = collect_entry_array_addresses(entry_bytes, address_bytes) else {
-        return false;
+fn read_group_values(
+    refs: &[ArrayAddress],
+    out: &mut Vec<f64>,
+    mut read_one: impl FnMut(&ArrayAddress, &mut Vec<f64>) -> IonResult<()>,
+) -> IonResult<()> {
+    let Some((first, rest)) = refs.split_first() else {
+        out.clear();
+        return Ok(());
     };
-    let Ok(groups) = group_arrays(&refs) else {
-        return false;
-    };
-    let mut segment = Vec::new();
-    for group in &groups {
-        let target = match group.array_type {
-            ACC_MZ => &mut *mz,
-            ACC_INT => &mut *intensity,
-            _ => continue,
-        };
-        for array_address in &group.refs {
-            let (element_offset, count, stride) = address_read_params(array_address);
-            let raw = match container.get_array_bytes_from_block(
-                array_address.block_id,
-                element_offset,
-                count,
-                stride,
-                "scan",
-            ) {
-                Ok(raw) => raw,
-                Err(_) => return false,
-            };
-            if decode_into(
-                &mut segment,
-                raw,
-                array_address.dtype,
-                array_address.array_filter,
-            )
-            .is_err()
-            {
-                return false;
-            }
-            target.extend_from_slice(&segment);
-        }
+    read_one(first, out)?;
+    let mut window = Vec::new();
+    for array_address in rest {
+        read_one(array_address, &mut window)?;
+        out.extend_from_slice(&window);
     }
-    mz.len().min(intensity.len()) > 0
+    Ok(())
 }
 
 impl IonReader {
-    #[allow(private_interfaces)]
-    pub fn spectrum_array_addresses(&self, index: usize) -> Option<Vec<ArrayAddress>> {
+    pub(crate) fn spectrum_array_addresses(&self, index: usize) -> Option<Vec<ArrayAddress>> {
         if index >= self.header.spectrum_count as usize {
             return None;
         }
@@ -451,21 +366,7 @@ impl IonReader {
             .map(ArrayAddressList::into_vec)
     }
 
-    #[allow(private_interfaces)]
-    pub fn chromatogram_array_addresses(&self, index: usize) -> Option<Vec<ArrayAddress>> {
-        if index >= self.header.chrom_count as usize {
-            return None;
-        }
-        read_array_addresses_from_buffers(
-            &self.chrom_entries_buf,
-            &self.chrom_array_addresses,
-            index,
-        )
-        .map(ArrayAddressList::into_vec)
-    }
-
-    #[allow(private_interfaces)]
-    pub fn read_spectrum_values(
+    pub(crate) fn read_spectrum_values(
         &mut self,
         array_address: &ArrayAddress,
         out: &mut Vec<f64>,
@@ -481,8 +382,7 @@ impl IonReader {
         decode_into(out, raw, array_address.dtype, array_address.array_filter)
     }
 
-    #[allow(private_interfaces)]
-    pub fn read_spectrum_array(&mut self, array_address: &ArrayAddress) -> IonResult<NumericArray> {
+    pub(crate) fn read_spectrum_array(&mut self, array_address: &ArrayAddress) -> IonResult<NumericArray> {
         let (element_offset, count, stride) = address_read_params(array_address);
         let raw = self.spec_container.get_array_bytes_from_block(
             array_address.block_id,
@@ -495,73 +395,27 @@ impl IonReader {
         super::to_mzml::decoded_bytes_to_binary_data(&values, array_address.dtype)
     }
 
-    #[allow(private_interfaces)]
-    pub fn read_chromatogram_values(
-        &mut self,
-        array_address: &ArrayAddress,
-        out: &mut Vec<f64>,
-    ) -> IonResult<()> {
-        let container = self
-            .chrom_container
-            .as_mut()
-            .ok_or_else(|| IonError::from("no chromatogram container"))?;
-        let (element_offset, count, stride) = address_read_params(array_address);
-        let raw = container.get_array_bytes_from_block(
-            array_address.block_id,
-            element_offset,
-            count,
-            stride,
-            "read_chromatogram_values",
-        )?;
-        decode_into(out, raw, array_address.dtype, array_address.array_filter)
-    }
-
-    #[allow(private_interfaces)]
-    pub fn read_chromatogram_array(
-        &mut self,
-        array_address: &ArrayAddress,
-    ) -> IonResult<NumericArray> {
-        let container = self
-            .chrom_container
-            .as_mut()
-            .ok_or_else(|| IonError::from("no chromatogram container"))?;
-        let (element_offset, count, stride) = address_read_params(array_address);
-        let raw = container.get_array_bytes_from_block(
-            array_address.block_id,
-            element_offset,
-            count,
-            stride,
-            "read_chromatogram_array",
-        )?;
-        let values = unfilter_array_bytes(raw, array_address.dtype, array_address.array_filter)?;
-        super::to_mzml::decoded_bytes_to_binary_data(&values, array_address.dtype)
-    }
-
-    pub(crate) fn read_group_values(
+    pub(crate) fn read_spectrum_group_values(
         &mut self,
         group: &ArrayGroup,
         out: &mut Vec<f64>,
     ) -> IonResult<()> {
-        let Some((first, rest)) = group.refs.split_first() else {
-            out.clear();
-            return Ok(());
-        };
-        self.read_spectrum_values(first, out)?;
-        let mut window = Vec::new();
-        for array_address in rest {
-            self.read_spectrum_values(array_address, &mut window)?;
-            out.extend_from_slice(&window);
-        }
-        Ok(())
+        read_group_values(&group.refs, out, |address, buf| {
+            self.read_spectrum_values(address, buf)
+        })
     }
 
-    pub fn array(&mut self, spectrum_index: usize, array_type: impl Into<u32>) -> IonResult<Vec<f64>> {
+    pub fn spectrum_array(
+        &mut self,
+        spectrum_index: usize,
+        array_type: impl Into<u32>,
+    ) -> IonResult<Vec<f64>> {
         let mut values = Vec::new();
-        self.array_into(spectrum_index, array_type, &mut values)?;
+        self.spectrum_array_into(spectrum_index, array_type, &mut values)?;
         Ok(values)
     }
 
-    pub fn array_into(
+    pub fn spectrum_array_into(
         &mut self,
         spectrum_index: usize,
         array_type: impl Into<u32>,
@@ -590,11 +444,122 @@ impl IonReader {
             if group.array_type != array_type {
                 continue;
             }
-            self.read_group_values(&group, out)?;
+            self.read_spectrum_group_values(&group, out)?;
             return Ok(());
         }
 
         Ok(())
+    }
+
+    pub(crate) fn read_chromatogram_values(
+        &mut self,
+        array_address: &ArrayAddress,
+        out: &mut Vec<f64>,
+    ) -> IonResult<()> {
+        let container = self
+            .chrom_container
+            .as_mut()
+            .ok_or_else(|| IonError::from("no chromatogram container"))?;
+        let (element_offset, count, stride) = address_read_params(array_address);
+        let raw = container.get_array_bytes_from_block(
+            array_address.block_id,
+            element_offset,
+            count,
+            stride,
+            "read_chromatogram_values",
+        )?;
+        decode_into(out, raw, array_address.dtype, array_address.array_filter)
+    }
+
+    pub(crate) fn read_chromatogram_group_values(
+        &mut self,
+        group: &ArrayGroup,
+        out: &mut Vec<f64>,
+    ) -> IonResult<()> {
+        read_group_values(&group.refs, out, |address, buf| {
+            self.read_chromatogram_values(address, buf)
+        })
+    }
+
+    pub fn chromatogram_array(
+        &mut self,
+        chromatogram_index: usize,
+        array_type: impl Into<u32>,
+    ) -> IonResult<Vec<f64>> {
+        let mut values = Vec::new();
+        self.chromatogram_array_into(chromatogram_index, array_type, &mut values)?;
+        Ok(values)
+    }
+
+    pub fn chromatogram_array_into(
+        &mut self,
+        chromatogram_index: usize,
+        array_type: impl Into<u32>,
+        out: &mut Vec<f64>,
+    ) -> IonResult<()> {
+        out.clear();
+        let array_type = array_type.into();
+        if chromatogram_index >= self.header.chrom_count as usize {
+            return Err(IonError::OutOfRange {
+                index: chromatogram_index,
+                count: self.header.chrom_count,
+            });
+        }
+
+        let Some(array_addresses) = read_array_addresses_from_buffers(
+            &self.chrom_entries_buf,
+            &self.chrom_array_addresses,
+            chromatogram_index,
+        ) else {
+            return Ok(());
+        };
+
+        let groups = group_arrays(array_addresses.as_slice())?;
+
+        for group in groups {
+            if group.array_type != array_type {
+                continue;
+            }
+            self.read_chromatogram_group_values(&group, out)?;
+            return Ok(());
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl IonReader {
+    pub(crate) fn chromatogram_array_addresses(&self, index: usize) -> Option<Vec<ArrayAddress>> {
+        if index >= self.header.chrom_count as usize {
+            return None;
+        }
+        read_array_addresses_from_buffers(
+            &self.chrom_entries_buf,
+            &self.chrom_array_addresses,
+            index,
+        )
+        .map(ArrayAddressList::into_vec)
+    }
+
+    pub(crate) fn read_chromatogram_array(
+        &mut self,
+        array_address: &ArrayAddress,
+    ) -> IonResult<NumericArray> {
+        let container = self
+            .chrom_container
+            .as_mut()
+            .ok_or_else(|| IonError::from("no chromatogram container"))?;
+        let (element_offset, count, stride) = address_read_params(array_address);
+        let raw = container.get_array_bytes_from_block(
+            array_address.block_id,
+            element_offset,
+            count,
+            stride,
+            "read_chromatogram_array",
+        )?;
+        let values = unfilter_array_bytes(raw, array_address.dtype, array_address.array_filter)?;
+        super::to_mzml::decoded_bytes_to_binary_data(&values, array_address.dtype)
     }
 }
 
@@ -657,8 +622,10 @@ mod tests {
         );
 
         let out: Vec<f64> = unfiltered
-            .chunks_exact(8)
-            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_le_bytes(*c))
             .collect();
         assert_eq!(out.len(), data.len());
         for (a, b) in out.iter().zip(data.iter()) {
@@ -689,7 +656,7 @@ mod tests {
 
     mod array_roundtrips {
         use crate::{
-            ArrayKind, IonReader, Range, ReadOptions, ScanQuery, Select, WriteOptions,
+            IonReader, Range, ReadOptions, ScanQuery, Select, WriteOptions,
             format::{CURRENT_VERSION, HEADER_FORMAT_VERSION_OFFSET},
             ion::encoder::ion_writer::write_mzml_to_ion,
             mzml::structs::{

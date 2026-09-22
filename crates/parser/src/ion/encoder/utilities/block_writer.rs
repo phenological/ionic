@@ -62,7 +62,6 @@ impl DefaultCompressor {
         let options = CompressOptions {
             level,
             checksum: false,
-            ..Default::default()
         };
         let encoder = Encoder::new(&options)
             .map_err(|err| IonError::from(format!("zstd start error: {err:?}")))?;
@@ -674,7 +673,6 @@ impl<C: BlockCompressor + Send + Sync> BlockWriter<C> {
                     payload_size: block.bytes.len() as u64,
                     uncompressed_len_bytes: block.raw_len,
                     checksum: block.checksum,
-                    ..Default::default()
                 },
             )?;
             self.payload_bytes += block.bytes.len() as u64;

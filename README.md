@@ -46,34 +46,23 @@ A command-line tool for converting mzML files to Ionic. See the [CLI](crates/cli
 
 ## Usage
 
-| Item | Available | What it does |
-|---|---|---|
-| `ionic::read` / `ionic::write` | std | Whole `.ion` file to/from an `MzML`, in one call. |
-| `ionic::convert` | everywhere | Convert an in-memory buffer between mzML and Ionic. |
-| `ionic::convert_file` | std | Convert between two paths, streaming to disk. |
-| `IonReader::open` | std | Open a `.ion` file by path (memory-mapped). |
-| `IonReader::from_bytes` | everywhere | Open a `.ion` file already in memory. |
-| `IonReader::new` | everywhere | Open from any `ionic::source::ReadBytes` (partial/remote reads). |
-| `IonWriter::create` | std | Write a new `.ion` file by path. |
-| `IonWriter::to` | everywhere | Write into any `ionic::source::WriteBytes` sink, such as a `Vec<u8>`. |
-| `ionic::mzml` | everywhere | mzML types and parser/serializer: `MzML`, `Spectrum`, `Chromatogram`, `NumericArray`, `parse_mzml`, `bin_to_mzml`, ... |
-| `ionic::source` | everywhere | Partial/remote-read building blocks: `ReadBytes`, `WriteBytes`, `ByteRange`, `CallbackSource`, `header_ranges`, `merge_ranges`. |
-| `ionic::format` | everywhere | File-format constants used by tooling: `CURRENT_VERSION`, `HEADER_SIZE`, `FILE_SIGNATURE`, `is_supported`, ... |
+| Item | What it does |
+|---|---|
+| `ionic::read` / `ionic::write` | Whole `.ion` file to/from an `MzML`, in one call. (std) |
+| `ionic::convert` | Convert an in-memory buffer between mzML and Ionic. |
+| `ionic::convert_file` | Convert between two paths, streaming to disk. (std) |
+| `IonReader::open` | Open a `.ion` file by path (memory-mapped). (std) |
+| `IonReader::from_bytes` | Open a `.ion` file already in memory. |
+| `IonReader::new` | Open from any `ionic::source::ReadBytes` (partial/remote reads). |
+| `IonWriter::create` | Write a new `.ion` file by path. (std) |
+| `IonWriter::to` | Write into any `ionic::source::WriteBytes` sink, such as a `Vec<u8>`. |
+| `ionic::mzml` | mzML types and parser/serializer: `MzML`, `Spectrum`, `Chromatogram`, `NumericArray`, `parse_mzml`, `bin_to_mzml`, ... |
+| `ionic::source` | Partial/remote-read building blocks: `ReadBytes`, `WriteBytes`, `ByteRange`, `CallbackSource`, `header_ranges`, `merge_ranges`. |
+| `ionic::format` | File-format constants used by tooling: `CURRENT_VERSION`, `HEADER_SIZE`, `FILE_SIGNATURE`, `is_supported`, ... |
 
 "std" means the item needs a real filesystem and is not available on `wasm32-unknown-unknown`; "everywhere" means it also works there.
 
-### Read, one call
-
-```rust
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mzml = ionic::read("run.ion")?;
-    let count = mzml.run.spectrum_list.map_or(0, |list| list.spectra.len());
-    println!("{count} spectra");
-    Ok(())
-}
-```
-
-### Reader with options
+### Read
 
 ```rust
 use ionic::{ArrayKind, IonReader, ReadOptions};
@@ -84,9 +73,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..ReadOptions::default()
     };
     let mut reader = IonReader::open("run.ion", &options)?;
-    let mz = reader.array(0, ArrayKind::Mz)?;
-    let intensity = reader.array(0, ArrayKind::Intensity)?;
+    let mz = reader.spectrum_array(0, ArrayKind::Mz)?;
+    let intensity = reader.spectrum_array(0, ArrayKind::Intensity)?;
     println!("{} points", mz.len().min(intensity.len()));
+    Ok(())
+}
+```
+
+### Streaming reader
+
+Read one spectrum at a time. Memory stays small, even for large files.
+
+```rust
+use ionic::{IonReader, ReadOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
+    for index in 0..reader.spectrum_count() as usize {
+        let spectrum = reader.spectrum_metadata_at(index)?;
+        println!("{}", spectrum.id);
+    }
     Ok(())
 }
 ```
@@ -100,7 +106,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `parallel` | `true` |
 | `decompression_limit` | `DecompressionLimit::default()` (2 GiB uncompressed cap) |
 
-### Write, one call
+### Partial reads — ionic::source
+
+`byte_ranges` and `eic_byte_ranges` turn a query into the exact byte ranges a remote source
+would need to fetch, without reading them; that is what lets a viewer such as
+[ion-beam](https://github.com/phenological/ion-beam) show only the bytes it downloaded.
+
+```rust
+use ionic::{IonReader, Range, ReadOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
+    let ranges = reader.byte_ranges(0, Range { from: 200.0, to: 400.0 })?;
+    for range in ranges {
+        println!("fetch bytes {}..{}", range.offset, range.offset + range.length);
+    }
+    Ok(())
+}
+```
+
+### Write
 
 ```rust
 use ionic::WriteOptions;
@@ -114,20 +139,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Streaming writer
 
-The metadata passed to `create`/`to` carries run-level information; spectra and chromatograms
-come from `write_spectrum`/`write_chromatogram` (or `write_stream`), not from the metadata
-argument. `finish` is required — `Drop` does not finish the file.
+The metadata passed to `create`/`to` holds run-level data only. Add spectra and chromatograms
+with `write_spectrum`/`write_chromatogram`, then call `finish`. `Drop` does not finish the file.
+`write_stream` writes a whole stream and finishes the file in one call.
 
 ```rust
-use ionic::{IonReader, IonWriter, ReadOptions, WriteOptions};
+use ionic::{IonWriter, WriteOptions, mzml::parse_mzml};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
-    let metadata = reader.metadata()?;
+    let mzml = parse_mzml(&std::fs::read("run.mzML")?)?;
 
-    let mut writer = IonWriter::create("out.ion", &metadata, &WriteOptions::default())?;
-    for index in 0..reader.spectrum_count() as usize {
-        writer.write_spectrum(&reader.spectrum(index)?)?;
+    let mut writer = IonWriter::create("out.ion", &mzml, &WriteOptions::default())?;
+    for spectrum in mzml.run.spectrum_list.iter().flat_map(|list| &list.spectra) {
+        writer.write_spectrum(spectrum)?;
     }
     writer.finish()?;
     Ok(())
@@ -167,25 +191,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `kind` | `ConvertKind::Auto` (sniffs the extension, then the file signature) |
 | `read` | `ReadOptions::default()` |
 | `write` | `WriteOptions::default()` |
-
-### Partial reads — ionic::source
-
-`byte_ranges` and `eic_byte_ranges` turn a query into the exact byte ranges a remote source
-would need to fetch, without reading them; that is what lets a viewer such as
-[ion-beam](https://github.com/phenological/ion-beam) show only the bytes it downloaded.
-
-```rust
-use ionic::{IonReader, Range, ReadOptions};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
-    let ranges = reader.byte_ranges(0, Range { from: 200.0, to: 400.0 })?;
-    for range in ranges {
-        println!("fetch bytes {}..{}", range.offset, range.offset + range.length);
-    }
-    Ok(())
-}
-```
 
 ## How the format works 
 

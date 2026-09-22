@@ -59,7 +59,7 @@ fn stream_writer_roundtrips_like_mzml_writer() {
     let mzml = parse_mzml(coordinate_xml()).unwrap();
     let mut reader = MzmlReader::from_mzml(mzml.clone());
     let mut bytes = Vec::new();
-    let mut writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
+    let writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
     writer.write_stream(&mut reader).unwrap();
     let decoded = decode_ion(&bytes).unwrap();
     let diffs = canonical_diff_paths(&mzml, &decoded);
@@ -71,7 +71,7 @@ fn spectrum_summary_keeps_coordinates() {
     let mzml = parse_mzml(coordinate_xml()).unwrap();
     let mut reader = MzmlReader::from_mzml(mzml);
     let mut bytes = Vec::new();
-    let mut writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
+    let writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
     writer.write_stream(&mut reader).unwrap();
     let ion = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap();
     let summary = ion.spectrum_summary(0).unwrap();
@@ -89,7 +89,7 @@ fn file_stream_reader_roundtrips_spectra_then_chromatograms() {
     let mzml = parse_mzml(mixed_xml()).unwrap();
     let mut reader = MzmlReader::open(&path).unwrap();
     let mut bytes = Vec::new();
-    let mut writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
+    let writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
     writer.write_stream(&mut reader).unwrap();
     let decoded = decode_ion(&bytes).unwrap();
     let diffs = canonical_diff_paths(&mzml, &decoded);

@@ -207,13 +207,7 @@ impl WriteOptions {
     }
 
     fn block_shuffle_is_enabled(self) -> bool {
-        if !self.compression_is_enabled() {
-            return false;
-        }
-        !matches!(
-            std::env::var("IONIC_BLOCK_SHUFFLE").as_deref(),
-            Ok("off") | Ok("raw") | Ok("0") | Ok("none")
-        )
+        self.compression_is_enabled()
     }
 
     pub(crate) fn array_filter_id(self) -> u8 {
@@ -247,20 +241,6 @@ impl WriteOptions {
             x_array_accession,
             y_array_accession: INTENSITY_ARRAY,
             force_f32: self.force_f32,
-        }
-    }
-
-    pub fn fast() -> Self {
-        Self {
-            compression_level: 3,
-            ..Default::default()
-        }
-    }
-
-    pub fn max_ratio() -> Self {
-        Self {
-            compression_level: 22,
-            ..Default::default()
         }
     }
 }
@@ -446,7 +426,6 @@ fn write_array_data(buf: &mut Vec<u8>, data: ArrayData<'_>, dtype: u8) {
         (FILE_DTYPE_I16, ArrayData::I16(e)) => write_i16_slice_le(buf, e),
         (FILE_DTYPE_I32, ArrayData::I32(e)) => write_i32_slice_le(buf, e),
         (FILE_DTYPE_I64, ArrayData::I64(e)) => write_i64_slice_le(buf, e),
-        // SAFETY: `validate_array_dtype` is always called before this function.
         _ => unreachable!("write_array_data called with unvalidated dtype/data combination"),
     }
 }
@@ -582,7 +561,7 @@ fn resolve_array_encoding<'a>(
     let elem_bytes = element_byte_size_for_dtype(dtype);
     let dtype_enum = Dtype::from_byte(dtype).unwrap_or(Dtype::F64);
     let requested: &'static dyn Packing = if config.compression_is_enabled() {
-        packing_for(accession, dtype_enum, data.element_count())
+        packing_for(accession, dtype_enum)
     } else {
         &RAW_PACKING
     };

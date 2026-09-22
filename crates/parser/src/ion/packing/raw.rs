@@ -13,8 +13,13 @@ impl Packing for Raw {
     }
 
     fn encode(&self, input: PackingInput<'_>, out: &mut Vec<u8>) -> IonResult<()> {
-        if let PackingInput::Bytes(b) = input {
-            out.extend_from_slice(b);
+        match input {
+            PackingInput::F64(values) => {
+                out.extend(values.iter().flat_map(|v| v.to_le_bytes()))
+            }
+            PackingInput::F32(values) => {
+                out.extend(values.iter().flat_map(|v| v.to_le_bytes()))
+            }
         }
         Ok(())
     }
@@ -30,19 +35,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_copies_bytes() {
-        let mut out = Vec::new();
-        RAW.encode(PackingInput::Bytes(&[1, 2, 3, 4]), &mut out)
-            .unwrap();
-        assert_eq!(out, [1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn encode_non_bytes_input_is_noop() {
+    fn encode_writes_f64_le_bytes() {
         let mut out = Vec::new();
         RAW.encode(PackingInput::F64(&[1.0, 2.0]), &mut out)
             .unwrap();
-        assert!(out.is_empty());
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1.0f64.to_le_bytes());
+        expected.extend_from_slice(&2.0f64.to_le_bytes());
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn encode_writes_f32_le_bytes() {
+        let mut out = Vec::new();
+        RAW.encode(PackingInput::F32(&[1.0, 2.0]), &mut out)
+            .unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1.0f32.to_le_bytes());
+        expected.extend_from_slice(&2.0f32.to_le_bytes());
+        assert_eq!(out, expected);
     }
 
     #[test]
@@ -60,12 +71,18 @@ mod tests {
     }
 
     #[test]
-    fn bytes_roundtrip() {
-        let input = b"hello world 12345678";
+    fn f64_roundtrip() {
+        let input = [1.5f64, -2.25, 3.0];
         let mut enc = Vec::new();
-        RAW.encode(PackingInput::Bytes(input), &mut enc).unwrap();
+        RAW.encode(PackingInput::F64(&input), &mut enc).unwrap();
         let mut dec = Vec::new();
         RAW.decode(&enc, Dtype::F64, &mut dec).unwrap();
-        assert_eq!(dec.as_slice(), input.as_ref());
+        let got: Vec<f64> = dec
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_le_bytes(*c))
+            .collect();
+        assert_eq!(got, input);
     }
 }
