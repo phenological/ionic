@@ -68,7 +68,7 @@ fn group_arrays_errors_on_type_mismatch_in_continuation() {
 
 #[test]
 fn new_reader_opens_old_fixture() {
-    let reader = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let reader = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     assert!(matches!(
         reader.spec_window_directory,
         WindowDirectoryCache::Unloaded
@@ -77,7 +77,7 @@ fn new_reader_opens_old_fixture() {
 
 #[test]
 fn to_mzml_preserves_declared_spectrum_count() {
-    let mut reader = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let mzml = reader.to_mzml().unwrap();
     let list = mzml.run.spectrum_list.expect("spectrum list");
     assert_eq!(list.count, Some(3476));
@@ -86,7 +86,7 @@ fn to_mzml_preserves_declared_spectrum_count() {
 
 #[test]
 fn to_mzml_keeps_data_type_cv_param_in_place() {
-    let mut reader = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let mzml = reader.to_mzml().unwrap();
     let spectra = mzml.run.spectrum_list.expect("spectrum list").spectra;
     let array = &spectra[0]
@@ -99,11 +99,11 @@ fn to_mzml_keeps_data_type_cv_param_in_place() {
 
 #[test]
 fn get_spectrum_lazy_matches_full_conversion() {
-    let mut reader = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let full = reader.to_mzml().unwrap();
     let full_spectra = full.run.spectrum_list.expect("spectrum list").spectra;
     for (index, full_spectrum) in full_spectra.iter().enumerate() {
-        let lazy = reader.spectrum(index).unwrap().expect("spectrum present");
+        let lazy = reader.spectrum(index).expect("spectrum present");
         assert_eq!(
             format!("{lazy:?}"),
             format!("{full_spectrum:?}"),
@@ -114,7 +114,7 @@ fn get_spectrum_lazy_matches_full_conversion() {
 
 #[test]
 fn metadata_at_matches_filtered_full_read() {
-    let mut reader = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
 
     let all_spectra = reader.spectrum_metadata().unwrap();
     for index in 0..reader.spectrum_count() as usize {
@@ -141,19 +141,19 @@ fn metadata_at_matches_filtered_full_read() {
 
 #[test]
 fn open_parses_header() {
-    let d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     assert!(d.spectrum_count() > 0);
 }
 
 #[test]
 fn summary_returns_none_out_of_bounds() {
-    let d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     assert!(d.spectrum_summary(d.spectrum_count() as usize).is_none());
 }
 
 #[test]
 fn summary_has_valid_rt() {
-    let d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let r = d.spectrum_summary(0).unwrap();
     assert!(r.rt.is_finite() && r.rt >= 0.0);
     assert!(r.ms_level >= 1);
@@ -161,7 +161,7 @@ fn summary_has_valid_rt() {
 
 #[test]
 fn array_addresses_contain_mz_and_intensity() {
-    let d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let refs = d.spectrum_array_addresses(0).unwrap();
     assert!(refs.iter().any(|a| a.array_type == ACC_MZ));
     assert!(refs.iter().any(|a| a.array_type == ACC_INT));
@@ -169,7 +169,7 @@ fn array_addresses_contain_mz_and_intensity() {
 
 #[test]
 fn read_array_produces_mz_values() {
-    let mut d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let mut d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let refs = d.spectrum_array_addresses(0).unwrap();
     let mz_address = refs.iter().find(|a| a.array_type == ACC_MZ).unwrap();
 
@@ -182,7 +182,7 @@ fn read_array_produces_mz_values() {
 
 #[test]
 fn for_each_scan_yields_matching_scans() {
-    let mut d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let mut d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let mut count = 0usize;
     d.for_each_in_range(0.0, f64::MAX, 0, |summary, mz, int| {
         assert!(summary.rt.is_finite());
@@ -195,7 +195,7 @@ fn for_each_scan_yields_matching_scans() {
 
 #[test]
 fn for_each_scan_filters_by_ms_level() {
-    let mut d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let mut d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let mut count = 0usize;
     d.for_each_in_range(0.0, f64::MAX, 1, |_, _, _| {
         count += 1;
@@ -209,25 +209,25 @@ fn for_each_scan_filters_by_ms_level() {
 fn reencoded_fixture() -> Vec<u8> {
     use crate::ion::encoder::{encode::WriteOptions, ion_writer::write_mzml_to_ion};
     let mzml = {
-        let mut reader = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+        let mut reader = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
         reader.to_mzml().unwrap()
     };
     let mut out = Vec::new();
-    write_mzml_to_ion(&mzml, WriteOptions::default(), &mut out).unwrap();
+    write_mzml_to_ion(&mzml, &WriteOptions::default(), &mut out).unwrap();
     out
 }
 
 #[test]
 fn scans_in_visits_every_scan_and_matches_read_window() {
     let bytes = reencoded_fixture();
-    let mut reader = IonReader::open(&bytes, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap();
     let mz = Range {
         from: 0.0,
         to: f64::MAX,
     };
     let mut seen: Vec<(usize, Vec<f64>, Vec<f64>)> = Vec::new();
     reader
-        .scans_in(mz, Select::All, None, &mut |window| {
+        .scans_in(&ScanQuery { mz, select: Select::All, ms_level: None }, |window| {
             seen.push((window.index, window.mz.to_vec(), window.intensity.to_vec()));
         })
         .unwrap();
@@ -242,14 +242,14 @@ fn scans_in_visits_every_scan_and_matches_read_window() {
 #[test]
 fn scans_in_ms_level_filter_selects_only_matching_scans() {
     let bytes = reencoded_fixture();
-    let mut reader = IonReader::open(&bytes, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap();
     let mz = Range {
         from: 0.0,
         to: f64::MAX,
     };
     let mut count = 0usize;
     reader
-        .scans_in(mz, Select::All, Some(1), &mut |_window| {
+        .scans_in(&ScanQuery { mz, select: Select::All, ms_level: Some(1) }, |_window| {
             count += 1;
         })
         .unwrap();
@@ -266,7 +266,7 @@ fn scans_in_ms_level_filter_selects_only_matching_scans() {
 #[test]
 fn spec_array_addresses_store_cv_code_in_32_byte_records() {
     let bytes = reencoded_fixture();
-    let reader = IonReader::open(&bytes, ReadOptions::default()).unwrap();
+    let reader = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap();
     let table = &reader.spec_array_addresses;
     assert!(
         !table.is_empty(),
@@ -289,7 +289,7 @@ fn spec_array_addresses_store_cv_code_in_32_byte_records() {
 
 #[test]
 fn to_mzml_produces_valid_structure() {
-    let mut d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let mut d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     let mzml = d.to_mzml().unwrap();
     let sl = mzml.run.spectrum_list.as_ref().unwrap();
     assert!(!sl.spectra.is_empty());
@@ -306,13 +306,13 @@ fn to_mzml_produces_valid_structure() {
 
 #[test]
 fn global_metadata_returns_entries() {
-    let d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     assert!(!d.global_metadata().unwrap().is_empty());
 }
 
 #[test]
 fn spectrum_metadata_returns_entries() {
-    let d = IonReader::open(BYTES, ReadOptions::default()).unwrap();
+    let d = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
     assert!(!d.spectrum_metadata().unwrap().is_empty());
 }
 
@@ -324,7 +324,7 @@ fn custom_config_opens_successfully() {
         parallel: true,
         decompression_limit: DecompressionLimit::default(),
     };
-    let d = IonReader::open(BYTES, config).unwrap();
+    let d = IonReader::from_bytes(BYTES, &config).unwrap();
     assert!(d.spectrum_count() > 0);
 }
 
@@ -360,10 +360,10 @@ fn dtype_stride_maps_all_types() {
 #[test]
 fn open_bytes_gives_same_result_as_open() {
     let bytes_arc: Arc<[u8]> = Arc::from(BYTES);
-    let mut d1 = IonReader::open(BYTES, ReadOptions::default()).unwrap();
-    let mut d2 = IonReader::open_source(
+    let mut d1 = IonReader::from_bytes(BYTES, &ReadOptions::default()).unwrap();
+    let mut d2 = IonReader::new(
         Arc::new(BytesSource::new(bytes_arc)),
-        ReadOptions::default(),
+        &ReadOptions::default(),
     )
     .unwrap();
     assert_eq!(d1.spectrum_count(), d2.spectrum_count());
@@ -377,7 +377,7 @@ fn open_source_uses_provided_source() {
     use crate::ion::decoder::utilities::byte_source::{BytesSource, ReadBytes};
     let bytes_arc: Arc<[u8]> = Arc::from(BYTES);
     let source = Arc::new(BytesSource::new(bytes_arc.clone())) as Arc<dyn ReadBytes>;
-    let mut d = IonReader::open_source(source, ReadOptions::default()).unwrap();
+    let mut d = IonReader::new(source, &ReadOptions::default()).unwrap();
     assert!(d.spectrum_count() > 0);
     let mzml = d.to_mzml().unwrap();
     assert!(!mzml.run.spectrum_list.unwrap().spectra.is_empty());
@@ -469,7 +469,7 @@ fn mixed_normal_and_oversized_spectra_preserve_order_and_data() {
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 3,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -481,7 +481,7 @@ fn mixed_normal_and_oversized_spectra_preserve_order_and_data() {
     )
     .unwrap();
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     let mzml_out = decoder.to_mzml().unwrap();
     let out_spectra = mzml_out.run.spectrum_list.unwrap().spectra;
 
@@ -588,7 +588,7 @@ fn oversized_array_roundtrips_with_compression_and_parallel() {
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 3,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -600,7 +600,7 @@ fn oversized_array_roundtrips_with_compression_and_parallel() {
     )
     .unwrap();
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     let mzml_out = decoder.to_mzml().unwrap();
 
     let spectra = mzml_out.run.spectrum_list.unwrap().spectra;
@@ -702,7 +702,7 @@ fn oversized_array_roundtrips_through_encode_decode() {
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 0,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -714,7 +714,7 @@ fn oversized_array_roundtrips_through_encode_decode() {
     )
     .unwrap();
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     let mzml_out = decoder.to_mzml().unwrap();
 
     let spectra = mzml_out.run.spectrum_list.unwrap().spectra;
@@ -808,7 +808,7 @@ fn encode_one_spectrum_windowed(mz: Vec<f64>, int: Vec<f64>, mz_window: f64) -> 
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 3,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -858,7 +858,7 @@ fn encode_one_chromatogram_windowed(time: Vec<f64>, int: Vec<f64>, time_window: 
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 3,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -911,7 +911,7 @@ fn to_mzml_keeps_all_spectra_across_metadata_group_boundaries() {
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 3,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -921,7 +921,7 @@ fn to_mzml_keeps_all_spectra_across_metadata_group_boundaries() {
     )
     .unwrap();
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     assert_eq!(decoder.header.spectrum_count, spectrum_count as u64);
 
     let out = decoder.to_mzml().unwrap();
@@ -978,7 +978,7 @@ fn to_mzml_keeps_all_chromatograms_across_metadata_group_boundaries() {
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 3,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -988,7 +988,7 @@ fn to_mzml_keeps_all_chromatograms_across_metadata_group_boundaries() {
     )
     .unwrap();
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     assert_eq!(decoder.header.chrom_count, chromatogram_count as u64);
 
     let out = decoder.to_mzml().unwrap();
@@ -1013,7 +1013,7 @@ fn split_mz_array_roundtrips_through_to_mzml() {
 
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     assert!(
         decoder.header.spec_block_count >= 4,
         "splitting must produce several window blocks, got {}",
@@ -1057,8 +1057,8 @@ fn split_mz_array_roundtrips_through_get_spectrum() {
 
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
-    let spectrum = decoder.spectrum(0).unwrap().unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
+    let spectrum = decoder.spectrum(0).unwrap();
     let arrays = &spectrum
         .binary_data_array_list
         .as_ref()
@@ -1102,9 +1102,9 @@ fn read_spectrum_logical_array_joins_split_segments() {
 
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     let mz_out = decoder
-        .get_spectrum_array(0, crate::accessions::MZ_ARRAY)
+        .array(0, crate::accessions::MZ_ARRAY)
         .unwrap();
     assert_eq!(mz_out, mz);
 }
@@ -1116,7 +1116,7 @@ fn centroided_small_arrays_are_encoded_correctly() {
 
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 }
 
 #[test]
@@ -1127,10 +1127,10 @@ fn split_mz_array_roundtrips_with_disk_staged_bounds() {
 
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let mz_out = decoder
-        .get_spectrum_array(0, crate::accessions::MZ_ARRAY)
+        .array(0, crate::accessions::MZ_ARRAY)
         .unwrap();
     assert_eq!(mz_out, mz);
 }
@@ -1140,7 +1140,7 @@ fn read_window_handles_fractional_mz_window() {
     let mz: Vec<f64> = (0..2000).map(|i| 100.0 + i as f64 * 0.01).collect();
     let int: Vec<f64> = (0..2000).map(|i| (i * 3) as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 2.5);
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     for (low, high) in [(103.0, 107.0), (100.0, 120.0), (115.5, 116.5)] {
         let got = decoder
@@ -1177,7 +1177,7 @@ fn window_fast_path_matches_brute_force() {
     let int: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let windows = [
         (120.0, 130.0),
@@ -1226,7 +1226,7 @@ fn window_errors_when_bounds_missing() {
     let int: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     decoder.spec_window_directory = WindowDirectoryCache::Missing;
 
     assert_eq!(
@@ -1247,7 +1247,7 @@ fn window_on_unsplit_array_uses_fallback_and_is_correct() {
     let int: Vec<f64> = (0..10).map(|i| (i * 7) as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 0.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let got = decoder
         .read_window(
@@ -1269,7 +1269,7 @@ fn window_out_of_range_index_errors() {
     let int: Vec<f64> = (0..10).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     assert!(
         decoder
             .read_window(
@@ -1291,9 +1291,9 @@ fn reader_reads_mz_range() {
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
 
     let bytes_arc: Arc<[u8]> = Arc::from(encoded.as_slice());
-    let mut reader = IonReader::open_source(
+    let mut reader = IonReader::new(
         Arc::new(BytesSource::new(bytes_arc)),
-        ReadOptions::default(),
+        &ReadOptions::default(),
     )
     .unwrap();
     let got = reader
@@ -1317,7 +1317,7 @@ fn a1_window_directory_pairs_windows_with_mz_and_intensity_refs() {
     let int: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     let _ = decoder
         .read_window(
             0,
@@ -1367,13 +1367,13 @@ fn generic_window_matches_read_mz_range() {
     let int: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let generic = decoder
         .read_spectrum_window(0, crate::accessions::MZ_ARRAY, ACC_INT, 120.0, 130.0)
         .unwrap();
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     let mz_range = decoder
         .read_window(
             0,
@@ -1394,7 +1394,7 @@ fn generic_window_missing_accession_returns_empty() {
     let int: Vec<f64> = (0..10).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let got = decoder
         .read_spectrum_window(0, 99_999_999u32, ACC_INT, 1.0, 2.0)
@@ -1425,7 +1425,7 @@ fn directory_crc_roundtrips() {
     let computed = crc32fast::hash(&encoded[start..end]);
 
     assert_eq!(computed, header.spec_directory_crc32);
-    assert!(IonReader::open(&encoded, ReadOptions::default()).is_ok());
+    assert!(IonReader::from_bytes(&encoded, &ReadOptions::default()).is_ok());
 }
 
 #[test]
@@ -1439,7 +1439,7 @@ fn flipped_directory_offset_is_caught_before_any_read() {
     let (start, _end) = spec_directory_range(&header);
     encoded[start] ^= 0xFF;
 
-    let result = IonReader::open(&encoded, ReadOptions::default());
+    let result = IonReader::from_bytes(&encoded, &ReadOptions::default());
     assert!(result.is_err());
     let message = format!("{}", result.err().unwrap());
     assert!(message.contains("directory checksum mismatch"));
@@ -1460,7 +1460,7 @@ fn verify_off_skips_directory_check() {
         verify_checksums: false,
         ..ReadOptions::default()
     };
-    assert!(IonReader::open(&encoded, config).is_ok());
+    assert!(IonReader::from_bytes(&encoded, &config).is_ok());
 }
 
 #[test]
@@ -1472,7 +1472,7 @@ fn empty_container_directory_crc_is_consistent() {
     let header = parse_header(&encoded[..1024]).unwrap();
     assert_eq!(header.chrom_block_count, 0);
     assert_eq!(header.chrom_directory_crc32, crc32fast::hash(&[]));
-    assert!(IonReader::open(&encoded, ReadOptions::default()).is_ok());
+    assert!(IonReader::from_bytes(&encoded, &ReadOptions::default()).is_ok());
 }
 
 #[test]
@@ -1498,7 +1498,7 @@ fn candidate_items_filters_by_axis_accession() {
     let int: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let mz_candidates = decoder
         .candidate_items(
@@ -1529,7 +1529,7 @@ fn candidate_items_returns_empty_when_window_directory_missing() {
     let int: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     decoder.spec_window_directory = WindowDirectoryCache::Missing;
 
@@ -1563,7 +1563,7 @@ fn candidate_items_empty_on_a1_crc_failure() {
     if a1_offset > 0 {
         encoded[a1_offset] ^= 0xFF;
 
-        let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+        let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
         let candidates = decoder
             .candidate_items(
                 ItemKind::Spectrum,
@@ -1602,7 +1602,7 @@ fn ensure_chrom_window_directory_distinguishes_missing_from_bad_checksum() {
 
     encoded[b1_offset] ^= 0xFF;
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     decoder.ensure_chrom_window_directory();
 
     assert!(
@@ -1614,7 +1614,7 @@ fn ensure_chrom_window_directory_distinguishes_missing_from_bad_checksum() {
     );
 
     let spectrum_only = encode_one_spectrum_windowed(vec![100.0, 200.0], vec![1.0, 2.0], 10.0);
-    let mut missing_decoder = IonReader::open(&spectrum_only, ReadOptions::default()).unwrap();
+    let mut missing_decoder = IonReader::from_bytes(&spectrum_only, &ReadOptions::default()).unwrap();
     missing_decoder.ensure_chrom_window_directory();
 
     assert!(
@@ -1656,7 +1656,7 @@ fn candidate_items_for_chrom_axis_without_bounds() {
     let int: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let encoded = encode_one_spectrum_windowed(mz, int, 10.0);
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let candidates = decoder
         .candidate_items(
@@ -1739,14 +1739,14 @@ fn block_ranges_for(decoder: &IonReader, block_ids: &[u32]) -> Vec<ByteRange> {
 #[test]
 fn require_bounds_passes_on_file_with_a1() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     assert!(decoder.require_bounds().is_ok());
 }
 
 #[test]
 fn require_bounds_errors_when_a1_missing() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     decoder.spec_window_directory = WindowDirectoryCache::Missing;
     assert_eq!(
         decoder.require_bounds(),
@@ -1763,7 +1763,7 @@ fn require_bounds_errors_on_bad_checksum() {
     assert!(a1_offset > 0);
     encoded[a1_offset] ^= 0xFF;
 
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     assert_eq!(
         decoder.require_bounds(),
         Err(IonError::BadSpectrumBoundsChecksum)
@@ -1773,7 +1773,7 @@ fn require_bounds_errors_on_bad_checksum() {
 #[test]
 fn require_bounds_errors_on_malformed_rows() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     decoder.spec_window_directory = WindowDirectoryCache::Malformed("bad rows".to_string());
     assert_eq!(
         decoder.require_bounds(),
@@ -1784,7 +1784,7 @@ fn require_bounds_errors_on_malformed_rows() {
 #[test]
 fn read_mz_range_matches_brute_force() {
     let (mz, int, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     for (low, high) in [(120.0, 130.0), (100.0, 149.999), (130.5, 130.5)] {
         let got = decoder
@@ -1813,7 +1813,7 @@ fn read_mz_range_matches_brute_force() {
 #[test]
 fn read_mz_range_errors_when_a1_missing() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     decoder.spec_window_directory = WindowDirectoryCache::Missing;
     assert_eq!(
         decoder.read_window(
@@ -1830,7 +1830,7 @@ fn read_mz_range_errors_when_a1_missing() {
 #[test]
 fn read_mz_range_errors_when_window_directory_malformed() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     decoder.spec_window_directory =
         WindowDirectoryCache::Malformed("bad window directory".to_string());
 
@@ -1847,7 +1847,7 @@ fn read_mz_range_errors_when_window_directory_malformed() {
 #[test]
 fn read_mz_range_errors_on_low_above_high() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     assert!(
         decoder
             .read_window(
@@ -1864,7 +1864,7 @@ fn read_mz_range_errors_on_low_above_high() {
 #[test]
 fn read_mz_range_errors_on_non_finite_bounds() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     assert!(
         decoder
             .read_window(
@@ -1892,7 +1892,7 @@ fn read_mz_range_errors_on_non_finite_bounds() {
 #[test]
 fn plan_mz_range_returns_mz_and_intensity_blocks() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let plan = decoder
         .byte_ranges(
@@ -1928,7 +1928,7 @@ fn plan_mz_range_returns_mz_and_intensity_blocks() {
 #[test]
 fn plan_and_read_mz_range_use_same_segments() {
     let (_, _, encoded) = split_file_with_a1();
-    let mut decoder = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let plan = decoder
         .byte_ranges(
@@ -1956,7 +1956,7 @@ fn plan_open_ranges_includes_spec_a1() {
     let header = parse_header(&encoded[..1024]).unwrap();
     assert!(header.len_spec_window_directory > 0);
 
-    let ranges = open_ranges(&encoded[..1024]).unwrap();
+    let ranges = header_ranges(&encoded[..1024]).unwrap();
     assert!(ranges.contains(&ByteRange {
         offset: header.off_spec_window_directory,
         length: header.len_spec_window_directory,
@@ -2063,7 +2063,7 @@ fn encode_spectra_over_windows(rts: &[f64], mz_window: f64) -> Vec<u8> {
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 3,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -2078,7 +2078,7 @@ fn encode_spectra_over_windows(rts: &[f64], mz_window: f64) -> Vec<u8> {
 }
 
 fn open_reader(encoded: &[u8]) -> IonReader {
-    IonReader::open(encoded, ReadOptions::default()).unwrap()
+    IonReader::from_bytes(encoded, &ReadOptions::default()).unwrap()
 }
 
 #[test]
@@ -2298,7 +2298,7 @@ fn coalesce_merges_adjacent_and_respects_gap() {
             length: 100,
         },
     ];
-    coalesce_byte_ranges(&mut overlapping, 0);
+    merge_ranges(&mut overlapping, 0);
     assert_eq!(
         overlapping,
         vec![ByteRange {
@@ -2317,7 +2317,7 @@ fn coalesce_merges_adjacent_and_respects_gap() {
             length: 100,
         },
     ];
-    coalesce_byte_ranges(&mut touching, 0);
+    merge_ranges(&mut touching, 0);
     assert_eq!(
         touching,
         vec![ByteRange {
@@ -2336,7 +2336,7 @@ fn coalesce_merges_adjacent_and_respects_gap() {
             length: 60,
         },
     ];
-    coalesce_byte_ranges(&mut inside_gap, 40);
+    merge_ranges(&mut inside_gap, 40);
     assert_eq!(
         inside_gap,
         vec![ByteRange {
@@ -2355,7 +2355,7 @@ fn coalesce_merges_adjacent_and_respects_gap() {
             length: 60,
         },
     ];
-    coalesce_byte_ranges(&mut beyond_gap, 40);
+    merge_ranges(&mut beyond_gap, 40);
     assert_eq!(beyond_gap.len(), 2);
 
     let mut contained = vec![
@@ -2368,7 +2368,7 @@ fn coalesce_merges_adjacent_and_respects_gap() {
             length: 50,
         },
     ];
-    coalesce_byte_ranges(&mut contained, 0);
+    merge_ranges(&mut contained, 0);
     assert_eq!(
         contained,
         vec![ByteRange {
@@ -2387,7 +2387,7 @@ fn coalesce_merges_adjacent_and_respects_gap() {
             length: 10,
         },
     ];
-    coalesce_byte_ranges(&mut with_empty, 0);
+    merge_ranges(&mut with_empty, 0);
     assert_eq!(
         with_empty,
         vec![ByteRange {
@@ -2410,7 +2410,7 @@ fn coalesce_merges_adjacent_and_respects_gap() {
             length: 50,
         },
     ];
-    coalesce_byte_ranges(&mut unsorted, 0);
+    merge_ranges(&mut unsorted, 0);
     assert_eq!(
         unsorted,
         vec![
@@ -2426,7 +2426,7 @@ fn coalesce_merges_adjacent_and_respects_gap() {
     );
 
     let mut nothing: Vec<ByteRange> = Vec::new();
-    coalesce_byte_ranges(&mut nothing, 16);
+    merge_ranges(&mut nothing, 16);
     assert!(nothing.is_empty());
 }
 
@@ -2434,11 +2434,11 @@ fn coalesce_merges_adjacent_and_respects_gap() {
 fn coalesced_open_ranges_cover_every_open_range() {
     let (_, _, encoded) = split_file_with_a1();
     let header = parse_header(&encoded[..1024]).unwrap();
-    let planned = open_ranges(&encoded[..1024]).unwrap();
+    let planned = header_ranges(&encoded[..1024]).unwrap();
 
     let alignment_gap = 8;
     let mut coalesced = planned.clone();
-    coalesce_byte_ranges(&mut coalesced, alignment_gap);
+    merge_ranges(&mut coalesced, alignment_gap);
 
     for range in &planned {
         let range_end = range.offset + range.length;
@@ -2466,7 +2466,7 @@ fn plan_open_ranges_includes_container_directories() {
     let header = parse_header(&encoded[..1024]).unwrap();
     let (start, end) = spec_directory_range(&header);
 
-    let ranges = open_ranges(&encoded[..1024]).unwrap();
+    let ranges = header_ranges(&encoded[..1024]).unwrap();
     assert!(ranges.contains(&ByteRange {
         offset: start as u64,
         length: (end - start) as u64,
@@ -2478,7 +2478,7 @@ fn reader_plans_and_reads_mz_range() {
     let (mz, int, encoded) = split_file_with_a1();
     let bytes: Arc<[u8]> = Arc::from(encoded.as_slice());
     let mut reader =
-        IonReader::open_source(Arc::new(BytesSource::new(bytes)), ReadOptions::default()).unwrap();
+        IonReader::new(Arc::new(BytesSource::new(bytes)), &ReadOptions::default()).unwrap();
 
     reader.require_bounds().unwrap();
 
@@ -2551,7 +2551,7 @@ fn roundtrip_compressed_sections_are_smaller_and_lossless() {
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 22,
             ..WriteOptions::default()
         },
@@ -2563,7 +2563,7 @@ fn roundtrip_compressed_sections_are_smaller_and_lossless() {
     assert_eq!(header.compression_codec, CODEC_ZSTD);
     assert_eq!(header.spectrum_count, spectrum_count as u64);
 
-    let mut reader = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
 
     let address_count = reader.spec_array_addresses.len() as u64 / ARRAY_ADDRESS_BYTES as u64;
     assert_eq!(address_count, spectrum_count as u64 * 2);
@@ -2671,7 +2671,7 @@ fn compression_disabled_keeps_sections_raw() {
     let mut encoded = Vec::new();
     write_mzml_to_ion(
         &mzml_in,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 0,
             ..WriteOptions::default()
         },
@@ -2686,7 +2686,7 @@ fn compression_disabled_keeps_sections_raw() {
         spectrum_count as u64 * SPEC_SUMMARY_SIZE as u64
     );
 
-    let mut reader = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     let mzml_out = reader.to_mzml().unwrap();
     assert_eq!(
         mzml_out.run.spectrum_list.unwrap().spectra.len(),
@@ -2721,7 +2721,7 @@ fn compressed_roundtrip_edge_cases() {
         };
 
         let mut encoded = Vec::new();
-        write_mzml_to_ion(&mzml_in, compressed_options, &mut encoded).unwrap();
+        write_mzml_to_ion(&mzml_in, &compressed_options, &mut encoded).unwrap();
 
         let header = parse_header(&encoded[..1024]).unwrap();
         assert_eq!(header.compression_codec, CODEC_ZSTD);
@@ -2729,7 +2729,7 @@ fn compressed_roundtrip_edge_cases() {
         assert_eq!(header.len_chrom_entries, 0);
         assert_eq!(header.len_chrom_array_addresses, 0);
 
-        let mut reader = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+        let mut reader = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
         let mzml_out = reader.to_mzml().unwrap();
         assert_eq!(mzml_out.run.spectrum_list.unwrap().spectra.len(), 1);
         assert_eq!(reader.chromatogram_count(), 0);
@@ -2739,7 +2739,7 @@ fn compressed_roundtrip_edge_cases() {
         let mzml_in = MzML::default();
 
         let mut encoded = Vec::new();
-        write_mzml_to_ion(&mzml_in, compressed_options, &mut encoded).unwrap();
+        write_mzml_to_ion(&mzml_in, &compressed_options, &mut encoded).unwrap();
 
         let header = parse_header(&encoded[..1024]).unwrap();
         assert_eq!(header.compression_codec, CODEC_ZSTD);
@@ -2750,7 +2750,7 @@ fn compressed_roundtrip_edge_cases() {
         assert_eq!(header.len_chrom_entries, 0);
         assert_eq!(header.len_chrom_array_addresses, 0);
 
-        let reader = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+        let reader = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
         assert_eq!(reader.spectrum_count(), 0);
         assert_eq!(reader.chromatogram_count(), 0);
     }
@@ -2776,13 +2776,13 @@ fn compressed_roundtrip_edge_cases() {
         };
 
         let mut encoded = Vec::new();
-        write_mzml_to_ion(&mzml_in, compressed_options, &mut encoded).unwrap();
+        write_mzml_to_ion(&mzml_in, &compressed_options, &mut encoded).unwrap();
 
         let header = parse_header(&encoded[..1024]).unwrap();
         assert_eq!(header.compression_codec, CODEC_ZSTD);
         assert_eq!(header.len_spec_array_addresses, 0);
 
-        let mut reader = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+        let mut reader = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
         let mzml_out = reader.to_mzml().unwrap();
         assert_eq!(mzml_out.run.spectrum_list.unwrap().spectra.len(), 1);
     }
@@ -2819,9 +2819,9 @@ fn ms_level_round_trips_without_cvparam_3() {
     };
 
     let mut encoded = Vec::new();
-    write_mzml_to_ion(&mzml_in, WriteOptions::default(), &mut encoded).unwrap();
+    write_mzml_to_ion(&mzml_in, &WriteOptions::default(), &mut encoded).unwrap();
 
-    let mut reader = IonReader::open(&encoded, ReadOptions::default()).unwrap();
+    let mut reader = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
     let mzml_out = reader.to_mzml().unwrap();
     let decoded_spectrum = mzml_out
         .run

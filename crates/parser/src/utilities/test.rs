@@ -33,8 +33,8 @@ pub(crate) fn parse_ion_as_mzml(cache: &'static OnceLock<MzML>, path: &str) -> &
     cache.get_or_init(|| {
         let bytes: &'static [u8] = Box::leak(load_mzml_bytes(path).into_boxed_slice());
 
-        let mut decoder = IonReader::open(bytes, ReadOptions::default())
-            .unwrap_or_else(|e| panic!("IonReader::open failed: {e}"));
+        let mut decoder = IonReader::from_bytes(bytes, &ReadOptions::default())
+            .unwrap_or_else(|e| panic!("IonReader::from_bytes failed: {e}"));
 
         decoder
             .to_mzml()

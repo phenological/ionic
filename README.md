@@ -46,88 +46,144 @@ A command-line tool for converting mzML files to Ionic. See the [CLI](crates/cli
 
 ## Usage
 
-### Convert
+| Item | Available | What it does |
+|---|---|---|
+| `ionic::read` / `ionic::write` | std | Whole `.ion` file to/from an `MzML`, in one call. |
+| `ionic::convert` | everywhere | Convert an in-memory buffer between mzML and Ionic. |
+| `ionic::convert_file` | std | Convert between two paths, streaming to disk. |
+| `IonReader::open` | std | Open a `.ion` file by path (memory-mapped). |
+| `IonReader::from_bytes` | everywhere | Open a `.ion` file already in memory. |
+| `IonReader::new` | everywhere | Open from any `ionic::source::ReadBytes` (partial/remote reads). |
+| `IonWriter::create` | std | Write a new `.ion` file by path. |
+| `IonWriter::to` | everywhere | Write into any `ionic::source::WriteBytes` sink, such as a `Vec<u8>`. |
+| `ionic::mzml` | everywhere | mzML types and parser/serializer: `MzML`, `Spectrum`, `Chromatogram`, `NumericArray`, `parse_mzml`, `bin_to_mzml`, ... |
+| `ionic::source` | everywhere | Partial/remote-read building blocks: `ReadBytes`, `WriteBytes`, `ByteRange`, `CallbackSource`, `header_ranges`, `merge_ranges`. |
+| `ionic::format` | everywhere | File-format constants used by tooling: `CURRENT_VERSION`, `HEADER_SIZE`, `FILE_SIGNATURE`, `is_supported`, ... |
 
-`ionic::convert` takes a path or a byte buffer. With `output` set it writes the file and returns `None`. With `output` empty it returns the result as `Some(bytes)`. `kind` defaults to `ConvertKind::Auto`, which reads the direction from the `.mzML` or `.ion` extension, and from the file signature for a buffer or a file without one of those extensions.
+"std" means the item needs a real filesystem and is not available on `wasm32-unknown-unknown`; "everywhere" means it also works there.
+
+### Read, one call
 
 ```rust
-use ionic::{ConvertKind, ConvertOptions, WriteOptions};
-
-ionic::convert(Path::new("run.mzML"), ConvertOptions { output: Some("run.ion".into()), ..Default::default() })?;
-ionic::convert(Path::new("run.ion"), ConvertOptions { output: Some("run.mzML".into()), ..Default::default() })?;
-
-let ion_bytes = ionic::convert(Path::new("run.mzML"), ConvertOptions::default())?.unwrap();
-let mzml_bytes = ionic::convert(&ion_bytes, ConvertOptions::default())?.unwrap();
-
-ionic::convert(
-    &mzml_bytes,
-    ConvertOptions {
-        output: Some("run.ion".into()),
-        kind: ConvertKind::MzmlToIon,
-        write: WriteOptions { compression_level: 0, ..Default::default() },
-        ..Default::default()
-    },
-)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mzml = ionic::read("run.ion")?;
+    let count = mzml.run.spectrum_list.map_or(0, |list| list.spectra.len());
+    println!("{count} spectra");
+    Ok(())
+}
 ```
 
-### Read an .ion file
+### Reader with options
 
 ```rust
 use ionic::{ArrayKind, IonReader, ReadOptions};
 
-let mut reader = IonReader::open_file(Path::new("run.ion"), ReadOptions::default())?;
-let mz = reader.get_spectrum_array(0, ArrayKind::Mz)?;
-let intensity = reader.get_spectrum_array(0, ArrayKind::Intensity)?;
-```
-
-### Reading options — ReadOptions
-
-```rust
-pub struct ReadOptions {
-    pub max_cached_bytes: usize,                 // decoded-block cache cap; default 256 MiB
-    pub verify_checksums: bool,                  // check CRCs + layout on open; default true
-    pub parallel: bool,                          // decode blocks in parallel; default true
-    pub decompression_limit: DecompressionLimit, // zip-bomb guard; type from ionic::ion::
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let options = ReadOptions {
+        parallel: false,
+        ..ReadOptions::default()
+    };
+    let mut reader = IonReader::open("run.ion", &options)?;
+    let mz = reader.array(0, ArrayKind::Mz)?;
+    let intensity = reader.array(0, ArrayKind::Intensity)?;
+    println!("{} points", mz.len().min(intensity.len()));
+    Ok(())
 }
 ```
 
-### Write an .ion file
+`ReadOptions::default()`:
 
-Memory
+| Field | Default |
+|---|---|
+| `max_cached_bytes` | `256 * 1024 * 1024` (256 MiB decoded-block cache) |
+| `verify_checksums` | `true` |
+| `parallel` | `true` |
+| `decompression_limit` | `DecompressionLimit::default()` (2 GiB uncompressed cap) |
+
+### Write, one call
 
 ```rust
-use ionic::{IonWriter, MemoryReader, MzML, Spectrum, WriteOptions};
+use ionic::WriteOptions;
 
-let mzml = MzML::from_spectra(vec![Spectrum::new("scan=1", vec![100.0, 200.0], vec![10.0, 20.0])]);
-let mut source = MemoryReader::new(mzml);
-let mut out: Vec<u8> = Vec::new();
-let mut writer = IonWriter::create(&mut out, WriteOptions::default())?;
-writer.write_stream(&mut source)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mzml = ionic::read("run.ion")?;
+    ionic::write("out.ion", &mzml, &WriteOptions::default())?;
+    Ok(())
+}
 ```
 
-File path
+### Streaming writer
+
+The metadata passed to `create`/`to` carries run-level information; spectra and chromatograms
+come from `write_spectrum`/`write_chromatogram` (or `write_stream`), not from the metadata
+argument. `finish` is required — `Drop` does not finish the file.
 
 ```rust
-use ionic::{FileWriter, IonWriter, MemoryReader, MzML, Spectrum, WriteOptions};
+use ionic::{IonReader, IonWriter, ReadOptions, WriteOptions};
 
-let mzml = MzML::from_spectra(vec![Spectrum::new("scan=1", vec![100.0, 200.0], vec![10.0, 20.0])]);
-let mut source = MemoryReader::new(mzml);
-let mut output = FileWriter::open_path(Path::new("out.ion"))?; // or FileWriter::open("out.ion")
-let mut writer = IonWriter::create(&mut output, WriteOptions::default())?;
-writer.write_stream(&mut source)?;
-output.flush()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
+    let metadata = reader.metadata()?;
+
+    let mut writer = IonWriter::create("out.ion", &metadata, &WriteOptions::default())?;
+    for index in 0..reader.spectrum_count() as usize {
+        writer.write_spectrum(&reader.spectrum(index)?)?;
+    }
+    writer.finish()?;
+    Ok(())
+}
 ```
 
-### WriteOptions
+`WriteOptions::default()`:
+
+| Field | Default |
+|---|---|
+| `compression_level` | `12` (0 = off, 1..=22 zstd) |
+| `force_f32` | `false` |
+| `block_size` | `1024 * 1024` (1 MiB target uncompressed block) |
+| `parallel` | `true` |
+| `section_storage` | `SectionStorage::Disk` |
+| `mz_window` | `20.0` |
+
+### Convert
 
 ```rust
-pub struct WriteOptions {
-    pub compression_level: u8,           // 0 = off, 1..=22 zstd; default 12
-    pub force_f32: bool,                 // narrow f64 arrays to f32 (lossy); default false
-    pub block_size: usize,               // target uncompressed block bytes; default 1 MiB
-    pub parallel: bool,                  // default true
-    pub section_storage: SectionStorage, // Memory or Disk; default Disk
-    pub mz_window: f64,                  // m/z window width for range-read indexing; default 100.0
+use ionic::ConvertOptions;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ionic::convert_file("run.mzML", "run.ion", &ConvertOptions::default())?;
+
+    let ion_bytes = std::fs::read("run.ion")?;
+    let mzml_bytes = ionic::convert(&ion_bytes, &ConvertOptions::default())?;
+    assert!(mzml_bytes.starts_with(b"<?xml"));
+    Ok(())
+}
+```
+
+`ConvertOptions::default()`:
+
+| Field | Default |
+|---|---|
+| `kind` | `ConvertKind::Auto` (sniffs the extension, then the file signature) |
+| `read` | `ReadOptions::default()` |
+| `write` | `WriteOptions::default()` |
+
+### Partial reads — ionic::source
+
+`byte_ranges` and `eic_byte_ranges` turn a query into the exact byte ranges a remote source
+would need to fetch, without reading them; that is what lets a viewer such as
+[ion-beam](https://github.com/phenological/ion-beam) show only the bytes it downloaded.
+
+```rust
+use ionic::{IonReader, Range, ReadOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
+    let ranges = reader.byte_ranges(0, Range { from: 200.0, to: 400.0 })?;
+    for range in ranges {
+        println!("fetch bytes {}..{}", range.offset, range.offset + range.length);
+    }
+    Ok(())
 }
 ```
 

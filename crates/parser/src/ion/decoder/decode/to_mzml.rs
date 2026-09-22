@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use super::*;
 use crate::ion::decoder::utilities::byte_source::SourceBytes;
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetadatumValue {
     Number(f64),
@@ -13,15 +14,16 @@ pub enum MetadatumValue {
     Empty,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Metadatum {
-    pub(crate) item_index: u32,
-    pub(crate) id: u32,
-    pub(crate) parent_id: u32,
-    pub(crate) tag_id: TagId,
-    pub(crate) accession: Option<String>,
-    pub(crate) unit_accession: Option<String>,
-    pub(crate) value: MetadatumValue,
+    pub item_index: u32,
+    pub id: u32,
+    pub parent_id: u32,
+    pub tag_id: TagId,
+    pub accession: Option<String>,
+    pub unit_accession: Option<String>,
+    pub value: MetadatumValue,
 }
 
 pub(crate) struct MzmlConverter<'d> {

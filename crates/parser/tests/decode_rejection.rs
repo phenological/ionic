@@ -2,7 +2,8 @@ mod common;
 
 use common::{assertions::assert_mzml_semantic_eq, decode_ion, encode_to_ion, test_files};
 use ionic::{
-    ion::{HEADER_FORMAT_VERSION_OFFSET, IonReader, IonResult, MAX_SUPPORTED_VERSION, ReadOptions},
+    IonReader, IonResult, ReadOptions,
+    format::{HEADER_FORMAT_VERSION_OFFSET, MAX_SUPPORTED_VERSION},
     mzml::structs::MzML,
 };
 
@@ -43,7 +44,7 @@ fn decode_ion_without_checksum_verification(bytes: &[u8]) -> IonResult<MzML> {
         verify_checksums: false,
         ..ReadOptions::default()
     };
-    let mut decoder = IonReader::open(bytes, options)?;
+    let mut decoder = IonReader::from_bytes(bytes, &options)?;
     decoder.to_mzml()
 }
 
@@ -70,7 +71,7 @@ fn rejects_unsupported_format_version() {
 
 #[test]
 fn accepts_all_supported_format_versions() {
-    use ionic::ion::{MIN_SUPPORTED_VERSION, allow_version};
+    use ionic::format::{MIN_SUPPORTED_VERSION, allow_version};
     for version in MIN_SUPPORTED_VERSION..=MAX_SUPPORTED_VERSION {
         assert!(
             allow_version(version).is_ok(),
@@ -161,7 +162,7 @@ fn rejects_huge_spec_entry_count_with_checksums_off_4() {
     };
 
     bytes[off + 8..off + 16].copy_from_slice(&u64::MAX.to_le_bytes());
-    let err = IonReader::open(&bytes, config.clone())
+    let err = IonReader::from_bytes(&bytes, &config.clone())
         .map(|_| ())
         .expect_err("decode must reject a huge spec entry count without checksums");
     assert!(err.contains("overflow"), "unexpected decode error: {err}");
@@ -170,7 +171,7 @@ fn rejects_huge_spec_entry_count_with_checksums_off_4() {
     let wrapping_count = table_len / 32 + (1u64 << 59);
     bytes[off..off + 8].copy_from_slice(&0u64.to_le_bytes());
     bytes[off + 8..off + 16].copy_from_slice(&wrapping_count.to_le_bytes());
-    let err = IonReader::open(&bytes, config)
+    let err = IonReader::from_bytes(&bytes, &config)
         .map(|_| ())
         .expect_err("decode must reject a count whose product wraps to the table size");
     assert!(err.contains("overflow"), "unexpected decode error: {err}");

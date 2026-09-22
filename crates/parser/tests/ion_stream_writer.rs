@@ -4,16 +4,15 @@ use std::fs;
 
 use common::{canonical_diff_paths, decode_ion};
 use ionic::{
-    IonWriter,
-    ion::{IonReader, ReadOptions, SectionStorage, TARGET_BLOCK_UNCOMPRESSED_BYTES, WriteOptions},
-    mzml::{MzmlReader, parse_mzml::parse_mzml},
+    IonReader, IonWriter, ReadOptions, SectionStorage, WriteOptions,
+    mzml::{MzmlReader, parse_mzml::parse_mzml, structs::MzML},
 };
 
 fn config() -> WriteOptions {
     WriteOptions {
         compression_level: 0,
         force_f32: false,
-        block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
+        block_size: WriteOptions::default().block_size,
         parallel: false,
         section_storage: SectionStorage::Memory,
         mz_window: 0.0,
@@ -60,7 +59,7 @@ fn stream_writer_roundtrips_like_mzml_writer() {
     let mzml = parse_mzml(coordinate_xml()).unwrap();
     let mut reader = MzmlReader::from_mzml(mzml.clone());
     let mut bytes = Vec::new();
-    let mut writer = IonWriter::create(&mut bytes, config()).unwrap();
+    let mut writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
     writer.write_stream(&mut reader).unwrap();
     let decoded = decode_ion(&bytes).unwrap();
     let diffs = canonical_diff_paths(&mzml, &decoded);
@@ -72,9 +71,9 @@ fn spectrum_summary_keeps_coordinates() {
     let mzml = parse_mzml(coordinate_xml()).unwrap();
     let mut reader = MzmlReader::from_mzml(mzml);
     let mut bytes = Vec::new();
-    let mut writer = IonWriter::create(&mut bytes, config()).unwrap();
+    let mut writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
     writer.write_stream(&mut reader).unwrap();
-    let ion = IonReader::open(&bytes, ReadOptions::default()).unwrap();
+    let ion = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap();
     let summary = ion.spectrum_summary(0).unwrap();
     assert_eq!(summary.position_x, 11);
     assert_eq!(summary.position_y, 22);
@@ -90,7 +89,7 @@ fn file_stream_reader_roundtrips_spectra_then_chromatograms() {
     let mzml = parse_mzml(mixed_xml()).unwrap();
     let mut reader = MzmlReader::open(&path).unwrap();
     let mut bytes = Vec::new();
-    let mut writer = IonWriter::create(&mut bytes, config()).unwrap();
+    let mut writer = IonWriter::to(&mut bytes, &MzML::default(), &config()).unwrap();
     writer.write_stream(&mut reader).unwrap();
     let decoded = decode_ion(&bytes).unwrap();
     let diffs = canonical_diff_paths(&mzml, &decoded);

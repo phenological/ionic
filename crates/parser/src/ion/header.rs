@@ -298,7 +298,7 @@ impl Header {
             return Err("header: expected little-endian endianness_flag=0".into());
         }
 
-        let format_version = get_version_from_header(bytes).unwrap();
+        let format_version = version_of(bytes).unwrap();
         allow_version(format_version)?;
         let compression_codec = h[HEADER_CODEC_ID];
         let compression_level = h[HEADER_COMPRESSION_LEVEL];
@@ -701,7 +701,7 @@ pub(crate) fn parse_header(bytes: &[u8]) -> IonResult<Header> {
 }
 
 #[inline]
-pub fn get_version_from_header(bytes: &[u8]) -> Option<u16> {
+pub fn version_of(bytes: &[u8]) -> Option<u16> {
     let end = HEADER_FORMAT_VERSION_OFFSET + 2;
     if bytes.len() < end {
         return None;
@@ -711,7 +711,7 @@ pub fn get_version_from_header(bytes: &[u8]) -> Option<u16> {
     Some(u16::from_le_bytes(buf))
 }
 
-pub fn update_header_version(header: &mut [u8]) -> IonResult<bool> {
+pub fn set_version(header: &mut [u8]) -> IonResult<bool> {
     if header.len() < HEADER_SIZE {
         return Err(format!(
             "header: need {HEADER_SIZE} bytes to update the format version, got {}",
@@ -730,7 +730,7 @@ pub fn update_header_version(header: &mut [u8]) -> IonResult<bool> {
         )
         .into());
     }
-    let version = get_version_from_header(header).unwrap();
+    let version = version_of(header).unwrap();
     if version == CURRENT_VERSION {
         return Ok(false);
     }
@@ -742,7 +742,8 @@ pub fn update_header_version(header: &mut [u8]) -> IonResult<bool> {
 }
 
 #[inline]
-pub fn get_total_file_size_from_header(bytes: &[u8]) -> Option<u64> {
+#[allow(dead_code)]
+pub(crate) fn get_total_file_size_from_header(bytes: &[u8]) -> Option<u64> {
     let end = HEADER_TOTAL_FILE_SIZE + 8;
     if bytes.len() < end {
         return None;
@@ -1062,7 +1063,7 @@ mod tests {
     #[test]
     fn get_version_returns_none_on_short_buffer() {
         let too_short = [0u8; HEADER_FORMAT_VERSION_OFFSET + 1];
-        assert_eq!(get_version_from_header(&too_short), None);
+        assert_eq!(version_of(&too_short), None);
     }
 
     #[test]
@@ -1070,7 +1071,7 @@ mod tests {
         let mut bytes = [0u8; HEADER_SIZE];
         bytes[HEADER_FORMAT_VERSION_OFFSET..HEADER_FORMAT_VERSION_OFFSET + 2]
             .copy_from_slice(&CURRENT_VERSION.to_le_bytes());
-        assert_eq!(get_version_from_header(&bytes), Some(CURRENT_VERSION));
+        assert_eq!(version_of(&bytes), Some(CURRENT_VERSION));
     }
 
     #[test]
@@ -1078,13 +1079,13 @@ mod tests {
         let mut bytes = [0u8; HEADER_SIZE];
         bytes[HEADER_FORMAT_VERSION_OFFSET..HEADER_FORMAT_VERSION_OFFSET + 2]
             .copy_from_slice(&u16::MAX.to_le_bytes());
-        assert_eq!(get_version_from_header(&bytes), Some(u16::MAX));
+        assert_eq!(version_of(&bytes), Some(u16::MAX));
     }
 
     #[test]
     fn get_version_handles_exact_minimum_buffer_length() {
         let bytes = [0u8; HEADER_FORMAT_VERSION_OFFSET + 2];
-        assert_eq!(get_version_from_header(&bytes), Some(0));
+        assert_eq!(version_of(&bytes), Some(0));
     }
 
     #[test]
@@ -1493,8 +1494,8 @@ mod tests {
     #[test]
     fn update_rewrites_older_supported_version_to_current() {
         let mut buf = header_bytes_at_version(MIN_SUPPORTED_VERSION);
-        assert_eq!(update_header_version(&mut buf), Ok(true));
-        assert_eq!(get_version_from_header(&buf), Some(CURRENT_VERSION));
+        assert_eq!(set_version(&mut buf), Ok(true));
+        assert_eq!(version_of(&buf), Some(CURRENT_VERSION));
         assert_eq!(
             read_u32_at(&buf, HEADER_CRC32),
             crc32fast::hash(&buf[0..HEADER_CRC32])
@@ -1506,7 +1507,7 @@ mod tests {
     fn update_leaves_current_version_untouched() {
         let mut buf = header_bytes_at_version(CURRENT_VERSION);
         let before = buf;
-        assert_eq!(update_header_version(&mut buf), Ok(false));
+        assert_eq!(set_version(&mut buf), Ok(false));
         assert_eq!(buf, before);
     }
 
@@ -1515,7 +1516,7 @@ mod tests {
         let mut buf = header_bytes_at_version(MAX_SUPPORTED_VERSION + 1);
         let before = buf;
         assert_eq!(
-            update_header_version(&mut buf),
+            set_version(&mut buf),
             Err(IonError::UnsupportedFormatVersion(
                 MAX_SUPPORTED_VERSION + 1
             ))
@@ -1528,7 +1529,7 @@ mod tests {
         let mut buf = header_bytes_at_version(MIN_SUPPORTED_VERSION);
         buf[HEADER_CRC32] ^= 0xff;
         let before = buf;
-        let error = update_header_version(&mut buf).unwrap_err();
+        let error = set_version(&mut buf).unwrap_err();
         assert!(error.contains("header_crc32 mismatch"), "{error}");
         assert_eq!(buf, before);
     }
@@ -1537,9 +1538,9 @@ mod tests {
     fn update_rejects_bad_signature_and_short_buffer() {
         let mut buf = header_bytes_at_version(MIN_SUPPORTED_VERSION);
         buf[0] = b'X';
-        assert!(update_header_version(&mut buf).is_err());
+        assert!(set_version(&mut buf).is_err());
 
         let mut short = [0u8; HEADER_SIZE - 1];
-        assert!(update_header_version(&mut short).is_err());
+        assert!(set_version(&mut short).is_err());
     }
 }

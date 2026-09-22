@@ -1,10 +1,9 @@
 use std::{fs::File, io::IsTerminal, path::Path, sync::OnceLock};
 
-use cosmoz::{DecompressOptions, Decoder, decompress_into};
+use cosmoz::{DecompressOptions, Decoder};
 
-use ionic::ion::{
-    CODEC_NONE, CODEC_ZSTD, FILE_SIGNATURE, FILE_TRAILER, HEADER_SIZE, get_version_from_header,
-    is_supported,
+use ionic::format::{
+    CODEC_NONE, CODEC_ZSTD, FILE_SIGNATURE, FILE_TRAILER, HEADER_SIZE, is_supported, version_of,
 };
 
 static COLOR_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -100,7 +99,8 @@ fn decompress_section(
     decoder: &mut Decoder,
 ) -> Result<Vec<u8>, String> {
     let mut plain = vec![0u8; plain_len];
-    let written = decompress_into(stored, &mut plain, &DecompressOptions::default(), decoder)
+    let written = decoder
+        .decompress_into(stored, &mut plain)
         .map_err(|e| format!("decompress failed: {e:?}"))?;
     plain.truncate(written);
     Ok(plain)
@@ -290,7 +290,7 @@ impl<'a> HeaderView<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         let header = &bytes[..HEADER_SIZE];
         let sections = build_sections(header, u64_at(header, 400));
-        let mut decoder = Decoder::new();
+        let mut decoder = Decoder::new(&DecompressOptions::default());
         let spec_window_dir = open_window_directory(bytes, header, 32, 40, 384, &mut decoder);
         let chrom_window_dir = open_window_directory(bytes, header, 96, 104, 392, &mut decoder);
         let fixed = resolve_fixed_sections(bytes, header, &mut decoder);
@@ -583,7 +583,7 @@ fn print_summary(view: &HeaderView<'_>) {
         &format!("\"{sig}\""),
         Some(view.signature_ok()),
     );
-    let (version_text, version_ok) = match get_version_from_header(view.bytes) {
+    let (version_text, version_ok) = match version_of(view.bytes) {
         Some(v) => (v.to_string(), Some(is_supported(v))),
         None => ("?".to_string(), Some(false)),
     };
@@ -727,7 +727,7 @@ fn integrity_check_results(view: &HeaderView<'_>) -> [(&'static str, bool); 23] 
         ("22  E global_meta CRC-32", view.crc_ok(192, 200, 1016)),
         (
             "23  format version supported",
-            get_version_from_header(view.bytes)
+            version_of(view.bytes)
                 .map(is_supported)
                 .unwrap_or(false),
         ),

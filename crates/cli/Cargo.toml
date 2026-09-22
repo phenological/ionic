@@ -9,11 +9,11 @@ publish = false
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-ionic = { package = "ionic-rs", path = "../parser", version = "0.1.2" }
+ionic = { package = "ionic-rs", path = "../parser", version = "0.2.0" }
 regex = { workspace = true }
 rayon = { workspace = true }
-mimalloc = { version = "0.1.48" }
-crc32fast = "1.5.0"
+mimalloc = { version = "0.1.52" }
+crc32fast = "1.5.2"
 memmap2 = "0.9"
 cosmoz = { workspace = true }
 

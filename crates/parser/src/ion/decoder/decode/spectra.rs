@@ -90,6 +90,7 @@ pub(crate) fn build_one_chromatogram(
     ))
 }
 
+#[cfg(test)]
 pub(crate) struct ScanIterator<'a, 'd> {
     pub(crate) summary_chunks: std::slice::ChunksExact<'a, u8>,
     pub(crate) entry_chunks: std::slice::ChunksExact<'a, u8>,
@@ -102,6 +103,7 @@ pub(crate) struct ScanIterator<'a, 'd> {
     pub(crate) ms_level: u8,
 }
 
+#[cfg(test)]
 impl<'a, 'd> ScanIterator<'a, 'd> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -229,17 +231,6 @@ impl IonReader {
             .collect())
     }
 
-    pub fn chromatogram_summary(&self, index: usize) -> Option<ChromatogramSummary> {
-        let b = slice_summary(
-            &self.chrom_summary_buf,
-            0,
-            index,
-            CHROM_SUMMARY_SIZE,
-            self.header.chrom_count,
-        )?;
-        Some(parse_chrom_summary(b))
-    }
-
     pub fn chromatogram_summaries(&self) -> IonResult<Vec<ChromatogramSummary>> {
         let count = usize::try_from(self.header.chrom_count)
             .map_err(|_| IonError::from("chrom summary: out of bounds"))?;
@@ -295,13 +286,18 @@ impl IonReader {
         self.chrom_meta_reader.read_item(index as u64)
     }
 
-    pub fn spectrum(&mut self, index: usize) -> IonResult<Option<Spectrum>> {
+    pub fn spectrum(&mut self, index: usize) -> IonResult<Spectrum> {
         if index >= self.header.spectrum_count as usize {
-            return Ok(None);
+            return Err(IonError::OutOfRange {
+                index,
+                count: self.header.spectrum_count,
+            });
         }
         let rows = self.spec_meta_reader.read_item(index as u64)?;
         let Some(mut spectrum) = build_one_spectrum(&rows, index) else {
-            return Ok(None);
+            return Err(IonError::from(format!(
+                "spectrum {index}: metadata is missing the spectrum tag"
+            )));
         };
 
         if let Some(array_addresses) = read_array_addresses_from_buffers(
@@ -325,16 +321,21 @@ impl IonReader {
             }
             bd_list.count = Some(bd_list.binary_data_arrays.len());
         }
-        Ok(Some(spectrum))
+        Ok(spectrum)
     }
 
-    pub fn chromatogram(&mut self, index: usize) -> IonResult<Option<Chromatogram>> {
+    pub fn chromatogram(&mut self, index: usize) -> IonResult<Chromatogram> {
         if index >= self.header.chrom_count as usize {
-            return Ok(None);
+            return Err(IonError::OutOfRange {
+                index,
+                count: self.header.chrom_count,
+            });
         }
         let rows = self.chrom_meta_reader.read_item(index as u64)?;
         let Some(mut chromatogram) = build_one_chromatogram(&rows, index) else {
-            return Ok(None);
+            return Err(IonError::from(format!(
+                "chromatogram {index}: metadata is missing the chromatogram tag"
+            )));
         };
 
         if let (Some(array_addresses), Some(container)) = (
@@ -361,10 +362,11 @@ impl IonReader {
             }
             bd_list.count = Some(bd_list.binary_data_arrays.len());
         }
-        Ok(Some(chromatogram))
+        Ok(chromatogram)
     }
 }
 
+#[cfg(test)]
 impl ScanSource for IonReader {
     fn for_each_summary(&mut self, callback: &mut dyn FnMut(usize, ScanSummary)) {
         for (index, chunk) in self

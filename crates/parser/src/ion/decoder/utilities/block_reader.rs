@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
+
+use cosmoz::{DecompressOptions, Decoder};
 
 use crate::ion::{
     ByteRange, IonError, IonResult,
@@ -7,12 +9,64 @@ use crate::ion::{
     format::CODEC_NONE,
     packing::PackingId,
     utilities::{
-        common::{decompress_zstd, read_u32_le_at, read_u64_le_at},
+        common::{read_u32_le_at, read_u64_le_at},
         decompression_limit::DecompressionLimit,
     },
 };
 
 const LRU_NONE: usize = usize::MAX;
+
+thread_local! {
+    static BLOCK_DECODE_SCRATCH: RefCell<(Decoder, Vec<u8>)> =
+        RefCell::new((Decoder::new(&DecompressOptions::default()), Vec::new()));
+    static UNSHUFFLE_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+fn unshuffle_into_owned(
+    processor: &dyn BlockProcessor,
+    source: &[u8],
+    stride: Stride,
+    uncompressed_len: usize,
+) -> Vec<u8> {
+    UNSHUFFLE_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        if scratch.len() < uncompressed_len {
+            scratch.resize(uncompressed_len, 0);
+        }
+        processor.unshuffle(source, &mut scratch[..uncompressed_len], stride.as_usize());
+        scratch[..uncompressed_len].to_vec()
+    })
+}
+
+fn decompress_zstd_block(
+    compressed: &[u8],
+    target_len: usize,
+    budget: DecompressionLimit,
+) -> IonResult<Vec<u8>> {
+    if target_len == 0 {
+        return Ok(Vec::new());
+    }
+    budget.validate(compressed.len(), target_len)?;
+
+    BLOCK_DECODE_SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        let (decoder, buf) = &mut *scratch;
+        if buf.len() < target_len {
+            buf.resize(target_len, 0);
+        }
+        let actual = decoder
+            .decompress_into(compressed, &mut buf[..target_len])
+            .map_err(|err| IonError::from(format!("zstd decode failed: {err:?}")))?;
+
+        if actual != target_len {
+            return Err(
+                format!("zstd: bad decoded size (got={actual}, expected={target_len})").into(),
+            );
+        }
+
+        Ok(buf[..target_len].to_vec())
+    })
+}
 
 pub(crate) trait BlockProcessor {
     fn decompress(
@@ -47,7 +101,7 @@ impl BlockProcessor for DefaultBlockProcessor {
         target_len: usize,
         budget: DecompressionLimit,
     ) -> IonResult<Vec<u8>> {
-        decompress_zstd(compressed, target_len, budget)
+        decompress_zstd_block(compressed, target_len, budget)
     }
 
     #[inline]
@@ -216,9 +270,8 @@ impl<P: BlockProcessor> BlockReader<P> {
             if !needs_unshuffle {
                 return Ok(payload);
             }
-            let mut scratch = vec![0u8; uncompressed_len];
-            self.processor
-                .unshuffle(&payload, &mut scratch, stride.as_usize());
+            let scratch =
+                unshuffle_into_owned(&self.processor, &payload, stride, uncompressed_len);
             return Ok(SourceBytes::Owned(scratch));
         }
 
@@ -230,9 +283,8 @@ impl<P: BlockProcessor> BlockReader<P> {
             return Ok(SourceBytes::Owned(decompressed));
         }
 
-        let mut scratch = vec![0u8; uncompressed_len];
-        self.processor
-            .unshuffle(&decompressed, &mut scratch, stride.as_usize());
+        let scratch =
+            unshuffle_into_owned(&self.processor, &decompressed, stride, uncompressed_len);
         Ok(SourceBytes::Owned(scratch))
     }
 

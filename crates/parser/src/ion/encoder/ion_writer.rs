@@ -1,4 +1,4 @@
-use std::borrow::Borrow;
+use cosmoz::Encoder;
 
 pub(crate) struct SectionPlacement {
     pub(crate) offset: u64,
@@ -10,7 +10,7 @@ pub(crate) struct SectionPlacement {
 use crate::{
     accessions::{INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY},
     ion::{
-        IonResult,
+        IonError, IonResult,
         encoder::{
             encode::{
                 CHROM_SUMMARY_SIZE, EncodedArrayAddress, SPEC_SUMMARY_SIZE, WriteOptions,
@@ -20,11 +20,11 @@ use crate::{
             },
             scan_stream::ScanStream,
             utilities::{
-                BlockWriter, DefaultCompressor, SectionChunk,
+                BlockWriter, ContainerSummary, DefaultCompressor, SectionChunk,
                 meta_collector::{
                     ArrayPolicy, GroupedSection, LOCAL_LIST_NODE_ID, MetaCollector, MetaGrouper,
                     MzmlListItem, array_type_accession_from_binary_data_array,
-                    compress_bytes_if_enabled, serialize_global_meta_with_counts,
+                    compress_bytes_if_enabled, new_meta_encoder, serialize_global_meta_with_counts,
                 },
                 output::{SectionStorage, WriteBytes},
                 tables::{
@@ -39,7 +39,10 @@ use crate::{
         utilities::EmitAttributes,
         windowing::WindowRange,
     },
-    mzml::structs::{BinaryDataArray, BinaryDataArrayList, Chromatogram, MzML, Spectrum},
+    mzml::structs::{
+        BinaryDataArray, BinaryDataArrayList, Chromatogram, ChromatogramList, MzML, Spectrum,
+        SpectrumList,
+    },
 };
 
 fn spec_summary_bytes(spec: &Spectrum) -> [u8; SPEC_SUMMARY_SIZE] {
@@ -100,13 +103,14 @@ impl ArrayWriteState<'_> {
 }
 
 fn write_single_array(
+    output: &mut dyn WriteBytes,
     bda: &BinaryDataArray,
     config: WriteOptions,
     policy: ArrayPolicy,
-    container: &mut BlockWriter<'_, DefaultCompressor>,
+    container: &mut BlockWriter<DefaultCompressor>,
     state: &mut ArrayWriteState<'_>,
 ) -> IonResult<()> {
-    let Some(address) = encode_single_array(bda, config, policy, container)? else {
+    let Some(address) = encode_single_array(output, bda, config, policy, container)? else {
         return Ok(());
     };
     state.emit(&address)?;
@@ -114,14 +118,15 @@ fn write_single_array(
 }
 
 fn write_windowed_array(
+    output: &mut dyn WriteBytes,
     bda: &BinaryDataArray,
     config: WriteOptions,
     policy: ArrayPolicy,
     windows: &[WindowRange],
-    container: &mut BlockWriter<'_, DefaultCompressor>,
+    container: &mut BlockWriter<DefaultCompressor>,
     state: &mut ArrayWriteState<'_>,
 ) -> IonResult<()> {
-    let addresses = write_array_windows(bda, config, policy, windows, container)?;
+    let addresses = write_array_windows(output, bda, config, policy, windows, container)?;
     for address in &addresses {
         state.emit(address)?;
     }
@@ -130,12 +135,13 @@ fn write_windowed_array(
 
 #[allow(clippy::too_many_arguments)]
 fn encode_arrays_for<T>(
+    output: &mut dyn WriteBytes,
     item: &T,
     spectrum_index: u32,
     config: WriteOptions,
     policy: ArrayPolicy,
     windowable: bool,
-    container: &mut BlockWriter<'_, DefaultCompressor>,
+    container: &mut BlockWriter<DefaultCompressor>,
     index: &mut IndexTable,
     state: &mut ArrayWriteState<'_>,
     window_directory: &mut WindowDirectory,
@@ -160,9 +166,9 @@ where
             let address_start = *state.cursor;
             match windows.as_ref() {
                 Some(windows) => {
-                    write_windowed_array(bda, config, policy, windows, container, state)?
+                    write_windowed_array(output, bda, config, policy, windows, container, state)?
                 }
-                None => write_single_array(bda, config, policy, container, state)?,
+                None => write_single_array(output, bda, config, policy, container, state)?,
             }
             if *state.cursor > address_start {
                 if accession == policy.x_array_accession {
@@ -222,7 +228,7 @@ fn push_window_entries(
     }
 }
 
-trait HasArrayList {
+pub(crate) trait HasArrayList {
     fn array_list(&self) -> Option<&BinaryDataArrayList>;
 }
 
@@ -248,10 +254,9 @@ struct ItemStream {
     count: usize,
     address_cursor: u64,
     seen: Vec<u32>,
-    container_offset: u64,
-    block_count: u64,
-    container_total: u64,
-    directory_crc32: u32,
+    container: BlockWriter<DefaultCompressor>,
+    container_offset: Option<u64>,
+    container_summary: Option<ContainerSummary>,
 }
 
 struct StreamParts {
@@ -283,6 +288,17 @@ impl ItemStream {
             }
             Ok(SectionChunk::memory(capacity))
         };
+
+        let compressor = config.compression_mode()?;
+        let builder = BlockWriter::new(config.block_size, compressor, config.block_packing_id());
+        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
+        let builder = builder.window_major()?;
+        let container = if config.parallel {
+            builder
+        } else {
+            builder.force_sequential()
+        };
+
         Ok(Self {
             summary: SummaryTable::new(table(summary_hint * summary_size)?),
             index: IndexTable::new(table(table_hint * 16)?),
@@ -291,47 +307,78 @@ impl ItemStream {
                 METADATA_GROUP_SIZE,
                 config.compression_level,
                 SectionChunk::memory(0),
-            ),
+            )?,
             window_directory: WindowDirectory::new(),
             windowable,
             count: 0,
             address_cursor: 0,
             seen: Vec::with_capacity(8),
-            container_offset: 0,
-            block_count: 0,
-            container_total: 0,
-            directory_crc32: 0,
+            container,
+            container_offset: None,
+            container_summary: None,
         })
+    }
+
+    #[cfg(test)]
+    fn pending_bytes(&self) -> usize {
+        self.container.pending_bytes()
+    }
+
+    #[cfg(test)]
+    fn set_max_pending_bytes(&mut self, value: usize) {
+        self.container.set_max_pending_bytes(value);
+    }
+
+    fn is_sealed(&self) -> bool {
+        self.container_summary.is_some()
+    }
+
+    fn ensure_container_offset(&mut self, output: &mut dyn WriteBytes) -> IonResult<()> {
+        if self.container_offset.is_none() {
+            self.container_offset = Some(write_aligned(output, &[])?);
+        }
+        Ok(())
+    }
+
+    fn seal_container(&mut self, output: &mut dyn WriteBytes) -> IonResult<()> {
+        if self.container_summary.is_some() {
+            return Ok(());
+        }
+        self.ensure_container_offset(output)?;
+        self.container_summary = Some(self.container.finish(output)?);
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
     fn add<T, L>(
         &mut self,
+        output: &mut dyn WriteBytes,
         item: &T,
         config: WriteOptions,
         policy: ArrayPolicy,
         list_id: u32,
         list_schema: Option<&L>,
         collector: &mut MetaCollector,
-        container: &mut BlockWriter<'_, DefaultCompressor>,
         summary: &[u8],
     ) -> IonResult<()>
     where
         T: HasArrayList + MzmlListItem,
         L: EmitAttributes,
     {
+        self.ensure_container_offset(output)?;
         let mut state = ArrayWriteState {
             addresses: &mut self.addresses,
             cursor: &mut self.address_cursor,
             seen: &mut self.seen,
         };
         encode_arrays_for(
+            output,
             item,
             self.count as u32,
             config,
             policy,
             self.windowable,
-            container,
+            &mut self.container,
             &mut self.index,
             &mut state,
             &mut self.window_directory,
@@ -349,7 +396,11 @@ impl ItemStream {
         Ok(())
     }
 
-    fn finish(self) -> IonResult<StreamParts> {
+    fn finish(mut self, output: &mut dyn WriteBytes) -> IonResult<StreamParts> {
+        self.seal_container(output)?;
+        let summary = self
+            .container_summary
+            .expect("seal_container always sets container_summary");
         Ok(StreamParts {
             grouped: self.grouper.finish()?,
             summary: self.summary.finish(),
@@ -358,10 +409,10 @@ impl ItemStream {
             window_directory: self.window_directory.finish()?,
             count: self.count,
             type_count: self.seen.len(),
-            container_offset: self.container_offset,
-            block_count: self.block_count,
-            container_total: self.container_total,
-            directory_crc32: self.directory_crc32,
+            container_offset: self.container_offset.unwrap_or(0),
+            block_count: summary.block_count as u64,
+            container_total: summary.total_bytes,
+            directory_crc32: summary.directory_crc32,
         })
     }
 }
@@ -377,6 +428,7 @@ fn write_chunk_maybe_compressed(
     output: &mut dyn WriteBytes,
     section: SectionChunk,
     compression_level: u8,
+    encoder: &mut Encoder,
 ) -> IonResult<(u64, u64, u32)> {
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
     if section.is_spilled() {
@@ -387,181 +439,164 @@ fn write_chunk_maybe_compressed(
         let offset = write_aligned(output, &raw)?;
         return Ok((offset, 0, crc32fast::hash(&raw)));
     }
-    let stored = compress_bytes_if_enabled(raw, compression_level);
+    let stored = compress_bytes_if_enabled(raw, compression_level, encoder);
     let crc32 = crc32fast::hash(&stored);
     let offset = write_aligned(output, &stored)?;
     Ok((offset, stored.len() as u64, crc32))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn write_list<T, L, B, I>(
-    output: &mut dyn WriteBytes,
-    config: WriteOptions,
-    policy: ArrayPolicy,
-    list_id: u32,
-    list_schema: Option<&L>,
-    collector: &mut MetaCollector,
-    stream: &mut ItemStream,
-    items: I,
-    summary_of: fn(&T) -> [u8; SPEC_SUMMARY_SIZE],
-) -> IonResult<()>
-where
-    T: HasArrayList + MzmlListItem,
-    L: EmitAttributes,
-    B: Borrow<T>,
-    I: Iterator<Item = IonResult<B>>,
-{
-    stream.container_offset = write_aligned(output, &[])?;
-    let compressor = config.compression_mode()?;
-    let builder = BlockWriter::new(
-        output,
-        config.block_size,
-        compressor,
-        config.block_packing_id(),
-    );
-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-    let builder = builder.window_major()?;
-    let mut container = if config.parallel {
-        builder
-    } else {
-        builder.force_sequential()
-    };
-
-    let mut last_rt = f64::NEG_INFINITY;
-    let is_spectrum_stream = policy.x_array_accession == MZ_ARRAY;
-    for item in items {
-        let item = item?;
-        let item = item.borrow();
-        if is_spectrum_stream && let Some(list) = item.array_list() {
-            check_spectrum_mz_order(&list.binary_data_arrays, stream.count)?;
-        }
-        let summary = summary_of(item);
-        if is_spectrum_stream {
-            check_spectrum_rt_order(&summary, stream.count, &mut last_rt)?;
-        }
-        stream.add(
-            item,
-            config,
-            policy,
-            list_id,
-            list_schema,
-            collector,
-            &mut container,
-            &summary,
-        )?;
+fn schema_of_spectrum_list(list: &SpectrumList) -> SpectrumList {
+    SpectrumList {
+        count: list.count,
+        default_data_processing_ref: list.default_data_processing_ref.clone(),
+        spectra: Vec::new(),
     }
-
-    let summary = container.finish()?;
-    stream.block_count = summary.block_count as u64;
-    stream.container_total = summary.total_bytes;
-    stream.directory_crc32 = summary.directory_crc32;
-    Ok(())
 }
 
-pub struct IonWriter<'out> {
-    output: &'out mut dyn WriteBytes,
+fn schema_of_chromatogram_list(list: &ChromatogramList) -> ChromatogramList {
+    ChromatogramList {
+        count: list.count,
+        default_data_processing_ref: list.default_data_processing_ref.clone(),
+        chromatograms: Vec::new(),
+    }
+}
+
+pub(crate) struct IonWriter {
     config: WriteOptions,
+    compressor: Encoder,
     collector: MetaCollector,
     spec_list_id: u32,
     chrom_list_id: u32,
     spec_stream: ItemStream,
     chrom_stream: ItemStream,
+    spec_schema: Option<SpectrumList>,
+    chrom_schema: Option<ChromatogramList>,
+    last_spec_rt: f64,
 }
 
-impl<'out> IonWriter<'out> {
-    pub fn create(output: &'out mut dyn WriteBytes, config: WriteOptions) -> IonResult<Self> {
+impl IonWriter {
+    pub(crate) fn begin(
+        output: &mut dyn WriteBytes,
+        metadata: &MzML,
+        config: &WriteOptions,
+    ) -> IonResult<Self> {
+        let config = *config;
         allow_compression_level(config.compression_level)?;
         output.write(&[0u8; HEADER_SIZE])?;
 
-        let collector = MetaCollector::new();
-        let spec_list_id = LOCAL_LIST_NODE_ID;
-        let chrom_list_id = LOCAL_LIST_NODE_ID;
+        let compressor = new_meta_encoder(config.compression_level)?;
 
-        Ok(Self {
-            output,
+        let mut writer = Self {
             config,
-            collector,
-            spec_list_id,
-            chrom_list_id,
+            compressor,
+            collector: MetaCollector::new(),
+            spec_list_id: LOCAL_LIST_NODE_ID,
+            chrom_list_id: LOCAL_LIST_NODE_ID,
             spec_stream: ItemStream::new(256, SPEC_SUMMARY_SIZE, 256, config, true)?,
             chrom_stream: ItemStream::new(32, CHROM_SUMMARY_SIZE, 32, config, false)?,
-        })
+            spec_schema: None,
+            chrom_schema: None,
+            last_spec_rt: f64::NEG_INFINITY,
+        };
+        writer.set_metadata(metadata);
+        Ok(writer)
     }
 
-    pub fn write_mzml(&mut self, mzml: &MzML) -> IonResult<()> {
-        let spectra = mzml
-            .run
-            .spectrum_list
-            .as_ref()
-            .map_or(&[][..], |list| &list.spectra);
-        let chroms = mzml
+    fn set_metadata(&mut self, metadata: &MzML) {
+        self.spec_schema = metadata.run.spectrum_list.as_ref().map(schema_of_spectrum_list);
+        self.chrom_schema = metadata
             .run
             .chromatogram_list
             .as_ref()
-            .map_or(&[][..], |list| &list.chromatograms);
+            .map(schema_of_chromatogram_list);
+    }
 
-        write_list(
-            self.output,
+    pub(crate) fn push_spectrum(
+        &mut self,
+        output: &mut dyn WriteBytes,
+        spectrum: &Spectrum,
+    ) -> IonResult<()> {
+        if self.spec_stream.is_sealed() {
+            return Err(IonError::from(
+                "cannot push a spectrum after a chromatogram has been written",
+            ));
+        }
+        if let Some(list) = spectrum.array_list() {
+            check_spectrum_mz_order(&list.binary_data_arrays, self.spec_stream.count)?;
+        }
+        let summary = spec_summary_bytes(spectrum);
+        check_spectrum_rt_order(&summary, self.spec_stream.count, &mut self.last_spec_rt)?;
+        self.spec_stream.add(
+            output,
+            spectrum,
             self.config,
             self.config.array_policy(MZ_ARRAY),
             self.spec_list_id,
-            mzml.run.spectrum_list.as_ref(),
+            self.spec_schema.as_ref(),
             &mut self.collector,
-            &mut self.spec_stream,
-            spectra.iter().map(Ok),
-            spec_summary_bytes,
-        )?;
-        write_list(
-            self.output,
+            &summary,
+        )
+    }
+
+    pub(crate) fn push_chromatogram(
+        &mut self,
+        output: &mut dyn WriteBytes,
+        chromatogram: &Chromatogram,
+    ) -> IonResult<()> {
+        self.spec_stream.seal_container(output)?;
+        let summary = chrom_summary_bytes(chromatogram);
+        self.chrom_stream.add(
+            output,
+            chromatogram,
             self.config,
             self.config.array_policy(TIME_ARRAY),
             self.chrom_list_id,
-            mzml.run.chromatogram_list.as_ref(),
+            self.chrom_schema.as_ref(),
             &mut self.collector,
-            &mut self.chrom_stream,
-            chroms.iter().map(Ok),
-            chrom_summary_bytes,
-        )?;
-
-        self.finish_inner(mzml)
+            &summary,
+        )
     }
 
-    fn write_reader(&mut self, scans: &mut dyn ScanStream) -> IonResult<()> {
-        let metadata = scans.metadata()?;
-        write_list(
-            self.output,
-            self.config,
-            self.config.array_policy(MZ_ARRAY),
-            self.spec_list_id,
-            metadata.run.spectrum_list.as_ref(),
-            &mut self.collector,
-            &mut self.spec_stream,
-            std::iter::from_fn(|| scans.next_spectrum().transpose()),
-            spec_summary_bytes,
-        )?;
-
-        let metadata = scans.metadata()?;
-        write_list(
-            self.output,
-            self.config,
-            self.config.array_policy(TIME_ARRAY),
-            self.chrom_list_id,
-            metadata.run.chromatogram_list.as_ref(),
-            &mut self.collector,
-            &mut self.chrom_stream,
-            std::iter::from_fn(|| scans.next_chromatogram().transpose()),
-            chrom_summary_bytes,
-        )?;
-
-        let metadata = scans.metadata()?;
-        self.finish_inner(&metadata)
+    pub(crate) fn write_mzml(&mut self, output: &mut dyn WriteBytes, mzml: &MzML) -> IonResult<()> {
+        if let Some(list) = &mzml.run.spectrum_list {
+            for spectrum in &list.spectra {
+                self.push_spectrum(output, spectrum)?;
+            }
+        }
+        if let Some(list) = &mzml.run.chromatogram_list {
+            for chromatogram in &list.chromatograms {
+                self.push_chromatogram(output, chromatogram)?;
+            }
+        }
+        Ok(())
     }
 
-    pub fn write_stream(&mut self, scans: &mut dyn ScanStream) -> IonResult<()> {
-        self.write_reader(scans)
+    pub(crate) fn write_stream(
+        &mut self,
+        output: &mut dyn WriteBytes,
+        scans: &mut dyn ScanStream,
+    ) -> IonResult<()> {
+        let metadata = scans.metadata()?;
+        self.set_metadata(&metadata);
+        while let Some(spectrum) = scans.next_spectrum()? {
+            self.push_spectrum(output, &spectrum)?;
+        }
+
+        let metadata = scans.metadata()?;
+        self.set_metadata(&metadata);
+        while let Some(chromatogram) = scans.next_chromatogram()? {
+            self.push_chromatogram(output, &chromatogram)?;
+        }
+
+        let metadata = scans.metadata()?;
+        self.finish(output, &metadata)
     }
 
-    fn write_window_directory(&mut self, bounds: SectionChunk) -> IonResult<SectionPlacement> {
+    fn write_window_directory(
+        &mut self,
+        output: &mut dyn WriteBytes,
+        bounds: SectionChunk,
+    ) -> IonResult<SectionPlacement> {
         let raw = bounds.into_vec()?;
         let plain_len = raw.len() as u64;
         if raw.is_empty() {
@@ -572,9 +607,10 @@ impl<'out> IonWriter<'out> {
                 crc32: crc32fast::hash(&[]),
             });
         }
-        let stored = compress_bytes_if_enabled(raw, self.config.compression_level);
+        let stored =
+            compress_bytes_if_enabled(raw, self.config.compression_level, &mut self.compressor);
         let crc32 = crc32fast::hash(&stored);
-        let offset = write_aligned(self.output, &stored)?;
+        let offset = write_aligned(output, &stored)?;
         let length = stored.len() as u64;
         Ok(SectionPlacement {
             offset,
@@ -584,22 +620,23 @@ impl<'out> IonWriter<'out> {
         })
     }
 
-    fn finish_inner(&mut self, mzml: &MzML) -> IonResult<()> {
+    pub(crate) fn finish(&mut self, output: &mut dyn WriteBytes, mzml: &MzML) -> IonResult<()> {
         let (global_meta, global_counts) = self.collector.collect_global_meta(mzml);
         let raw_global = serialize_global_meta_with_counts(&global_counts, &global_meta)?;
         let global_uncompressed = raw_global.len() as u64;
-        let global_bytes = compress_bytes_if_enabled(raw_global, self.config.compression_level);
+        let global_bytes =
+            compress_bytes_if_enabled(raw_global, self.config.compression_level, &mut self.compressor);
 
         let spec = std::mem::replace(
             &mut self.spec_stream,
-            ItemStream::new(256, SPEC_SUMMARY_SIZE, 256, self.config, true)?,
+            ItemStream::new(1, SPEC_SUMMARY_SIZE, 1, self.config, true)?,
         )
-        .finish()?;
+        .finish(output)?;
         let chrom = std::mem::replace(
             &mut self.chrom_stream,
-            ItemStream::new(32, CHROM_SUMMARY_SIZE, 32, self.config, false)?,
+            ItemStream::new(1, CHROM_SUMMARY_SIZE, 1, self.config, false)?,
         )
-        .finish()?;
+        .finish(output)?;
 
         let spec_meta_crc32 = spec.grouped.crc32;
         let chrom_meta_crc32 = chrom.grouped.crc32;
@@ -611,29 +648,59 @@ impl<'out> IonWriter<'out> {
         let compression_level = self.config.compression_level;
 
         let (off_spec_summary, len_spec_summary_stored, spec_summary_crc32) =
-            write_chunk_maybe_compressed(self.output, spec.summary, compression_level)?;
+            write_chunk_maybe_compressed(
+                output,
+                spec.summary,
+                compression_level,
+                &mut self.compressor,
+            )?;
         let (off_spec_entries, len_spec_entries_stored, spec_entries_crc32) =
-            write_chunk_maybe_compressed(self.output, spec.index, compression_level)?;
+            write_chunk_maybe_compressed(
+                output,
+                spec.index,
+                compression_level,
+                &mut self.compressor,
+            )?;
         let (off_spec_array_addresses, len_spec_array_addresses_stored, spec_array_addresses_crc32) =
-            write_chunk_maybe_compressed(self.output, spec.addresses, compression_level)?;
+            write_chunk_maybe_compressed(
+                output,
+                spec.addresses,
+                compression_level,
+                &mut self.compressor,
+            )?;
         let (off_chrom_summary, len_chrom_summary_stored, chrom_summary_crc32) =
-            write_chunk_maybe_compressed(self.output, chrom.summary, compression_level)?;
+            write_chunk_maybe_compressed(
+                output,
+                chrom.summary,
+                compression_level,
+                &mut self.compressor,
+            )?;
         let (off_chrom_entries, len_chrom_entries_stored, chrom_entries_crc32) =
-            write_chunk_maybe_compressed(self.output, chrom.index, compression_level)?;
+            write_chunk_maybe_compressed(
+                output,
+                chrom.index,
+                compression_level,
+                &mut self.compressor,
+            )?;
         let (
             off_chrom_array_addresses,
             len_chrom_array_addresses_stored,
             chrom_array_addresses_crc32,
-        ) = write_chunk_maybe_compressed(self.output, chrom.addresses, compression_level)?;
-        let off_spec_meta = write_chunk(self.output, spec.grouped.section)?.0;
-        let off_chrom_meta = write_chunk(self.output, chrom.grouped.section)?.0;
-        let off_global_meta = write_aligned(self.output, &global_bytes)?;
+        ) = write_chunk_maybe_compressed(
+            output,
+            chrom.addresses,
+            compression_level,
+            &mut self.compressor,
+        )?;
+        let off_spec_meta = write_chunk(output, spec.grouped.section)?.0;
+        let off_chrom_meta = write_chunk(output, chrom.grouped.section)?.0;
+        let off_global_meta = write_aligned(output, &global_bytes)?;
 
-        let a1 = self.write_window_directory(spec.window_directory)?;
-        let b1 = self.write_window_directory(chrom.window_directory)?;
+        let a1 = self.write_window_directory(output, spec.window_directory)?;
+        let b1 = self.write_window_directory(output, chrom.window_directory)?;
 
-        self.output.write(&FILE_TRAILER)?;
-        let total_file_size = self.output.position()?;
+        output.write(&FILE_TRAILER)?;
+        let total_file_size = output.position()?;
 
         let header = Header {
             compression_codec: self.config.codec_id(),
@@ -722,15 +789,114 @@ impl<'out> IonWriter<'out> {
         header.write(&mut header_bytes);
         let crc = crc32fast::hash(&header_bytes[0..1020]);
         header_bytes[1020..1024].copy_from_slice(&crc.to_le_bytes());
-        self.output.patch(0, &header_bytes)
+        output.patch(0, &header_bytes)
     }
 }
 
-pub fn write_mzml_to_ion(
+pub(crate) fn write_mzml_to_ion(
     mzml: &MzML,
-    config: WriteOptions,
+    config: &WriteOptions,
     output: &mut dyn WriteBytes,
 ) -> IonResult<()> {
-    allow_compression_level(config.compression_level)?;
-    IonWriter::create(output, config)?.write_mzml(mzml)
+    let mut writer = IonWriter::begin(output, mzml, config)?;
+    writer.write_mzml(output, mzml)?;
+    writer.finish(output, mzml)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ion::decoder::decode::IonReader,
+        mzml::structs::{BinaryDataArrayList, CvParam, NumericArray},
+    };
+
+    fn make_bda(accession: &str, name: &str, data: Vec<f64>) -> BinaryDataArray {
+        BinaryDataArray {
+            cv_params: vec![CvParam {
+                cv_ref: Some("MS".to_string()),
+                accession: Some(accession.to_string()),
+                name: name.to_string(),
+                value: None,
+                unit_cv_ref: None,
+                unit_name: None,
+                unit_accession: None,
+            }],
+            binary: Some(NumericArray::F64(data)),
+            ..Default::default()
+        }
+    }
+
+    fn make_spectrum(id: usize, rt: f64) -> Spectrum {
+        let mz = vec![100.0 + id as f64, 101.0 + id as f64, 102.0 + id as f64];
+        let intensity = vec![1.0, 2.0, 3.0];
+        Spectrum {
+            id: format!("scan={id}"),
+            index: Some(id as u32),
+            cv_params: vec![CvParam {
+                cv_ref: Some("MS".to_string()),
+                accession: Some("MS:1000016".to_string()),
+                name: "scan start time".to_string(),
+                value: Some(rt.to_string()),
+                unit_cv_ref: Some("UO".to_string()),
+                unit_accession: Some("UO:0000010".to_string()),
+                unit_name: Some("second".to_string()),
+            }],
+            binary_data_array_list: Some(BinaryDataArrayList {
+                count: Some(2),
+                binary_data_arrays: vec![
+                    make_bda("MS:1000514", "m/z array", mz),
+                    make_bda("MS:1000515", "intensity array", intensity),
+                ],
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn push_spectrum_streams_instead_of_buffering_the_whole_file() {
+        let block_size = 256;
+        let config = WriteOptions {
+            compression_level: 0,
+            block_size,
+            parallel: false,
+            ..Default::default()
+        };
+        let mut output = Vec::new();
+        let mut writer = IonWriter::begin(&mut output, &MzML::default(), &config).unwrap();
+        // Flush every sealed block immediately, so the pending queue can never hold
+        // more than the block currently being assembled.
+        writer.spec_stream.set_max_pending_bytes(1);
+
+        let spectrum_count = 500;
+        let mut max_pending_bytes_seen = 0usize;
+        for i in 0..spectrum_count {
+            writer
+                .push_spectrum(&mut output, &make_spectrum(i, i as f64))
+                .unwrap();
+            max_pending_bytes_seen = max_pending_bytes_seen.max(writer.spec_stream.pending_bytes());
+        }
+
+        // The bytes held by not-yet-flushed blocks must stay within one block's
+        // worth of data, regardless of how many spectra have been pushed so far:
+        // push_spectrum must stream one block at a time, not buffer the whole file.
+        assert!(
+            max_pending_bytes_seen <= block_size,
+            "pending bytes ({max_pending_bytes_seen}) exceeded one block ({block_size}) \
+             after pushing {spectrum_count} spectra"
+        );
+
+        writer.finish(&mut output, &MzML::default()).unwrap();
+
+        let mut reader =
+            IonReader::from_bytes(&output, &crate::ion::decoder::decode::ReadOptions::default())
+                .unwrap();
+        assert_eq!(reader.spectrum_count(), spectrum_count as u64);
+        for i in [0usize, spectrum_count / 2, spectrum_count - 1] {
+            let spectrum = reader.spectrum(i).unwrap();
+            let mz = reader.array(i, crate::ion::ArrayKind::Mz).unwrap();
+            assert_eq!(spectrum.index, Some(i as u32));
+            assert_eq!(mz, vec![100.0 + i as f64, 101.0 + i as f64, 102.0 + i as f64]);
+        }
+    }
 }

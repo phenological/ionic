@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 use crate::ion::decoder::utilities::byte_source::FileSource;
+#[cfg(test)]
+use crate::ion::decoder::utilities::spectrum_source::ScanSource;
 use crate::{
     accessions::{
         FLOAT_16BIT, FLOAT_32BIT, FLOAT_64BIT, INT_16BIT, INT_32BIT, INT_64BIT, format_accession,
@@ -41,7 +43,7 @@ use crate::{
             parse_header, parse_instrument_list, parse_referenceable_param_group_list,
             parse_sample_list, parse_scan_settings_list, parse_software_list, parse_spectrum,
             parse_spectrum_list,
-            spectrum_source::{ScanSource, ScanSummary, TimeUnit, f16_bits_to_f64},
+            spectrum_source::{ScanSummary, TimeUnit, f16_bits_to_f64},
             window_directory::WindowDirectory,
         },
     },
@@ -111,15 +113,19 @@ mod spectra;
 mod to_mzml;
 mod windows;
 
-pub use arrays::ArrayAddress;
+pub(crate) use arrays::ArrayAddress;
 pub(crate) use arrays::{
     ArrayGroup, address_read_params, dtype_stride, group_arrays, parse_array_address,
-    read_array_addresses_from_buffers, read_group_decoded_bytes, read_scan_arrays,
-    unfilter_array_bytes,
+    read_array_addresses_from_buffers, read_group_decoded_bytes, unfilter_array_bytes,
 };
+#[cfg(test)]
+pub(crate) use arrays::read_scan_arrays;
 pub(crate) use to_mzml::attach_logical_array;
 pub use to_mzml::{Metadatum, MetadatumValue};
-pub use windows::{DataXY, ItemKind, ItemSlice, Pixel, Query, Select, Window};
+pub use windows::{DataXY, ScanQuery, Select, Window};
+#[cfg(test)]
+pub(crate) use windows::{ItemKind, ItemSlice};
+pub(crate) use windows::Pixel;
 
 #[derive(Debug, Clone)]
 pub struct ReadOptions {
@@ -152,6 +158,7 @@ pub struct IonReader {
     pub(crate) header: Header,
     pub(crate) source: Arc<dyn ReadBytes>,
     pub(crate) spec_window_directory: WindowDirectoryCache,
+    #[allow(dead_code)]
     pub(crate) chrom_window_directory: WindowDirectoryCache,
     pub(crate) spec_summary_buf: Arc<[u8]>,
     pub(crate) chrom_summary_buf: Arc<[u8]>,
@@ -164,7 +171,9 @@ pub struct IonReader {
     pub(crate) chrom_container: Option<BlockReader<DefaultBlockProcessor>>,
     pub(crate) spec_meta_reader: MetaGroupReader,
     pub(crate) chrom_meta_reader: MetaGroupReader,
+    #[allow(dead_code)]
     pub(crate) mz_values: Vec<f64>,
+    #[allow(dead_code)]
     pub(crate) int_values: Vec<f64>,
     pub(crate) parallel: bool,
     pub(crate) decompression_limit: DecompressionLimit,
@@ -172,20 +181,21 @@ pub struct IonReader {
 }
 
 impl IonReader {
-    pub fn open(bytes: &[u8], config: ReadOptions) -> IonResult<Self> {
+    pub fn from_bytes(bytes: &[u8], config: &ReadOptions) -> IonResult<Self> {
         let source = Arc::new(BytesSource::new(Arc::from(bytes))) as Arc<dyn ReadBytes>;
-        Self::open_source(source, config)
+        Self::new(source, config)
     }
 
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-    pub fn open_file(path: &std::path::Path, config: ReadOptions) -> IonResult<Self> {
+    pub fn open(path: impl AsRef<std::path::Path>, config: &ReadOptions) -> IonResult<Self> {
+        let path = path.as_ref();
         let file = std::fs::File::open(path).map_err(|e| IonError::from(e.to_string()))?;
         let map = unsafe { memmap2::Mmap::map(&file).map_err(|e| IonError::from(e.to_string()))? };
         let source = Arc::new(FileSource::new(map)) as Arc<dyn ReadBytes>;
-        Self::open_source(source, config)
+        Self::new(source, config)
     }
 
-    pub fn open_source(source: Arc<dyn ReadBytes>, config: ReadOptions) -> IonResult<Self> {
+    pub fn new(source: Arc<dyn ReadBytes>, config: &ReadOptions) -> IonResult<Self> {
         let header_buf = source.read(ByteRange {
             offset: 0,
             length: 1024,
@@ -500,6 +510,7 @@ impl IonReader {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn ensure_chrom_window_directory(&mut self) {
         if !matches!(self.chrom_window_directory, WindowDirectoryCache::Unloaded) {
             return;
@@ -547,6 +558,7 @@ impl IonReader {
         .map_err(|error| IonError::MalformedSpectrumBounds(error.to_string()))
     }
 
+    #[cfg(test)]
     fn load_chrom_window_directory(&self) -> IonResult<WindowDirectory> {
         if self.header.len_chrom_window_directory == 0 {
             return Err(IonError::MissingChromatogramBounds);
@@ -595,7 +607,7 @@ impl IonReader {
     }
 }
 
-pub fn coalesce_byte_ranges(ranges: &mut Vec<ByteRange>, gap: u64) {
+pub fn merge_ranges(ranges: &mut Vec<ByteRange>, gap: u64) {
     ranges.retain(|range| range.length > 0);
     ranges.sort_unstable_by_key(|range| (range.offset, range.length));
     let mut kept = 0;
@@ -619,9 +631,9 @@ pub fn coalesce_byte_ranges(ranges: &mut Vec<ByteRange>, gap: u64) {
     ranges.truncate(kept);
 }
 
-pub fn open_ranges(header_bytes: &[u8]) -> IonResult<Vec<ByteRange>> {
+pub fn header_ranges(header_bytes: &[u8]) -> IonResult<Vec<ByteRange>> {
     if header_bytes.len() < 1024 {
-        return Err("open_ranges: needs at least 1024 header bytes".into());
+        return Err("header_ranges: needs at least 1024 header bytes".into());
     }
     let header = parse_header(&header_bytes[..1024])?;
     open_byte_ranges(&header)

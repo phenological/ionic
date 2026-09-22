@@ -1,6 +1,8 @@
+use cosmoz::Encoder;
+
 use super::{
     super::output::SectionChunk, MetaParamBuffer, MetadataWriter, PackedMeta, PackedMetaBuilder,
-    compress_bytes_if_enabled,
+    compress_bytes_if_enabled, new_meta_encoder,
 };
 use crate::ion::{
     IonResult,
@@ -22,6 +24,7 @@ pub(crate) struct GroupedSection {
 pub(crate) struct MetaGrouper {
     group_size: u32,
     level: u8,
+    encoder: Encoder,
     builder: PackedMetaBuilder,
     items_in_group: u32,
     payloads: SectionChunk,
@@ -35,10 +38,11 @@ pub(crate) struct MetaGrouper {
 }
 
 impl MetaGrouper {
-    pub(crate) fn new(group_size: u32, level: u8, payloads: SectionChunk) -> Self {
-        Self {
+    pub(crate) fn new(group_size: u32, level: u8, payloads: SectionChunk) -> IonResult<Self> {
+        Ok(Self {
             group_size,
             level,
+            encoder: new_meta_encoder(level)?,
             builder: PackedMetaBuilder::new(),
             items_in_group: 0,
             payloads,
@@ -49,7 +53,7 @@ impl MetaGrouper {
             row_count: 0,
             numeric_count: 0,
             string_count: 0,
-        }
+        })
     }
 
     fn seal_group(&mut self) -> IonResult<()> {
@@ -64,7 +68,7 @@ impl MetaGrouper {
         let raw_size = raw.len() as u64;
         self.uncompressed_size += raw_size;
         let payload_offset = self.payloads.len();
-        let compressed = compress_bytes_if_enabled(raw, self.level);
+        let compressed = compress_bytes_if_enabled(raw, self.level, &mut self.encoder);
         self.directory.push(MetaGroupEntry {
             payload_offset,
             payload_size: compressed.len() as u64,

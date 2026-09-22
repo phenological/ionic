@@ -17,9 +17,10 @@ pub(crate) fn schema() -> &'static SchemaTree {
 }
 
 #[repr(u8)]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum TagId {
+pub enum TagId {
     FileContent = 0,
     SourceFile = 1,
     Contact = 2,

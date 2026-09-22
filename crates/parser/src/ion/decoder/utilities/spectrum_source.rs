@@ -9,6 +9,7 @@ fn acc(s: Option<&str>) -> u32 {
     parse_accession_tail(s).raw()
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeUnit {
     Second,
@@ -37,6 +38,7 @@ impl TimeUnit {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct ScanSummary {
     pub rt: f64,
@@ -52,6 +54,7 @@ pub struct ScanSummary {
     pub position_z: u32,
 }
 
+#[cfg(test)]
 pub trait ScanSource {
     fn for_each_summary(&mut self, callback: &mut dyn FnMut(usize, ScanSummary));
     fn load_scan(&mut self, index: usize, mz: &mut Vec<f64>, intensity: &mut Vec<f64>) -> bool;
@@ -80,6 +83,7 @@ pub trait ScanSource {
     }
 }
 
+#[cfg(test)]
 impl ScanSource for MzML {
     fn for_each_summary(&mut self, callback: &mut dyn FnMut(usize, ScanSummary)) {
         let Some(list) = self.run.spectrum_list.as_ref() else {
@@ -225,6 +229,7 @@ pub(crate) fn summary_from_spectrum(spectrum: &Spectrum) -> ScanSummary {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn summary_from_spectra(
     spectra: &[Spectrum],
     callback: &mut dyn FnMut(usize, ScanSummary),
@@ -273,6 +278,7 @@ fn parse_u32(s: Option<&str>) -> u32 {
     s.and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
+#[cfg(test)]
 pub(crate) fn binary_pair(spectrum: &Spectrum) -> Option<(&NumericArray, &NumericArray)> {
     let list = spectrum.binary_data_array_list.as_ref()?;
     let mut mz = None;
@@ -303,6 +309,7 @@ pub(crate) fn binary_pair(spectrum: &Spectrum) -> Option<(&NumericArray, &Numeri
     Some((mz?, intensity?))
 }
 
+#[cfg(test)]
 pub(crate) fn load_scan_from_spectra(
     spectra: &[Spectrum],
     index: usize,
@@ -328,6 +335,7 @@ pub(crate) fn load_scan_from_spectra(
     true
 }
 
+#[cfg(test)]
 fn extend_from_binary(data: &NumericArray, out: &mut Vec<f64>, max: usize) {
     match data {
         NumericArray::F64(v) => out.extend_from_slice(&v[..max]),

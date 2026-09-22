@@ -142,7 +142,8 @@ fn encode_user_param_with_value_uses_separator() {
 #[test]
 fn compress_bytes_if_enabled_level_zero_is_identity() {
     let input = vec![1u8, 2, 3, 4];
-    assert_eq!(compress_bytes_if_enabled(input.clone(), 0), input);
+    let mut encoder = new_meta_encoder(0).unwrap();
+    assert_eq!(compress_bytes_if_enabled(input.clone(), 0, &mut encoder), input);
 }
 
 #[test]
@@ -243,7 +244,7 @@ fn three_item_grouped() -> grouper::GroupedSection {
         unit_name: None,
         unit_accession: None,
     };
-    let mut grouper = grouper::MetaGrouper::new(1, 0, SectionChunk::memory(0));
+    let mut grouper = grouper::MetaGrouper::new(1, 0, SectionChunk::memory(0)).unwrap();
     for (index, value) in ["10.5", "20.5", "30.5"].iter().enumerate() {
         let mut buffer = MetaParamBuffer::new();
         buffer.push(TagId::CvParam, (index + 1) as u32, 0, make_cv(value));
@@ -443,7 +444,7 @@ fn group_local_node_ids_across_group_boundaries() {
     let mut output = Vec::new();
     write_mzml_to_ion(
         &mzml,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 0,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -467,7 +468,7 @@ fn group_local_node_ids_across_group_boundaries() {
     }
 
     let mut decoder =
-        IonReader::open(&output, ReadOptions::default()).expect("failed to open decoder");
+        IonReader::from_bytes(&output, &ReadOptions::default()).expect("failed to open decoder");
 
     let first_rows = decoder
         .spectrum_metadata_at(0)
@@ -569,7 +570,7 @@ fn product_own_cv_params_parent_to_product_list_not_to_the_product_itself() {
     let mut output = Vec::new();
     write_mzml_to_ion(
         &mzml,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 0,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -587,7 +588,7 @@ fn product_own_cv_params_parent_to_product_list_not_to_the_product_itself() {
     };
 
     let mut decoder =
-        IonReader::open(&output, ReadOptions::default()).expect("failed to open decoder");
+        IonReader::from_bytes(&output, &ReadOptions::default()).expect("failed to open decoder");
     let rows = decoder
         .spectrum_metadata_at(0)
         .expect("failed to read spectrum metadata");

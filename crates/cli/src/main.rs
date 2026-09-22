@@ -15,11 +15,8 @@ use clap::{
     builder::styling::{AnsiColor, Color, Style, Styles},
 };
 use ionic::{
-    ConvertKind, ConvertOptions,
-    ion::{
-        CURRENT_VERSION, DEFAULT_MZ_WINDOW, HEADER_SIZE, IonReader, ReadOptions, SectionStorage,
-        WriteOptions, get_version_from_header, update_header_version,
-    },
+    ConvertKind, ConvertOptions, IonReader, ReadOptions, SectionStorage, WriteOptions,
+    format::{CURRENT_VERSION, DEFAULT_MZ_WINDOW, HEADER_SIZE, set_version, version_of},
     mzml::{parse_mzml::parse_mzml, structs::*},
 };
 use mimalloc::MiMalloc;
@@ -387,13 +384,20 @@ fn cat_chromatogram(file_path: &Path, index_1based: u32, with_arrays: bool) -> R
     print_json_compact(&chromatogram)
 }
 
+fn ion_result_to_option<T>(result: ionic::IonResult<T>) -> Result<Option<T>, String> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(ionic::IonError::OutOfRange { .. }) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn load_spectrum_at(file_path: &Path, index: usize) -> Result<Option<Spectrum>, String> {
     match file_ext_lower(file_path).as_str() {
         "ion" => {
-            let mut ion = IonReader::open_file(file_path, ReadOptions::default())
-                .map_err(|e| format!("IonReader::open_file failed: {e}"))?;
-            ion.spectrum(index)
-                .map_err(|e| format!("get_spectrum failed: {e}"))
+            let mut ion = IonReader::open(file_path, &ReadOptions::default())
+                .map_err(|e| format!("IonReader::open failed: {e}"))?;
+            ion_result_to_option(ion.spectrum(index))
         }
         "mzml" => {
             let bytes = fs::read(file_path).map_err(|e| format!("read failed: {e}"))?;
@@ -409,10 +413,9 @@ fn load_spectrum_at(file_path: &Path, index: usize) -> Result<Option<Spectrum>, 
 fn load_chromatogram_at(file_path: &Path, index: usize) -> Result<Option<Chromatogram>, String> {
     match file_ext_lower(file_path).as_str() {
         "ion" => {
-            let mut ion = IonReader::open_file(file_path, ReadOptions::default())
-                .map_err(|e| format!("IonReader::open_file failed: {e}"))?;
-            ion.chromatogram(index)
-                .map_err(|e| format!("get_chromatogram failed: {e}"))
+            let mut ion = IonReader::open(file_path, &ReadOptions::default())
+                .map_err(|e| format!("IonReader::open failed: {e}"))?;
+            ion_result_to_option(ion.chromatogram(index))
         }
         "mzml" => {
             let bytes = fs::read(file_path).map_err(|e| format!("read failed: {e}"))?;
@@ -471,8 +474,8 @@ fn read_mzml_or_ion(file_path: &Path) -> Result<MzML, String> {
     let ext = file_ext_lower(file_path);
 
     if ext == "ion" {
-        let ion = IonReader::open_file(file_path, ReadOptions::default())
-            .map_err(|e| format!("IonReader::open_file failed: {e}"))?;
+        let ion = IonReader::open(file_path, &ReadOptions::default())
+            .map_err(|e| format!("IonReader::open failed: {e}"))?;
         return ion.metadata().map_err(|e| format!("metadata failed: {e}"));
     }
     if ext == "mzml" {
@@ -493,12 +496,11 @@ fn write_mzml_as_ion(
     sweep_orphans(output_path)?;
     let temp_output = TempOutput::new(output_path)?;
     let options = ConvertOptions {
-        output: Some(temp_output.path().to_path_buf()),
         kind: ConvertKind::MzmlToIon,
         write: config,
         ..Default::default()
     };
-    ionic::convert(input_path, options).map_err(|error| error.to_string())?;
+    ionic::convert_file(input_path, temp_output.path(), &options).map_err(|error| error.to_string())?;
     temp_output.move_to(output_path)
 }
 
@@ -516,7 +518,7 @@ fn update_version_in_file(path: &Path) -> Result<Outcome, String> {
     let mut header = [0u8; HEADER_SIZE];
     file.read_exact(&mut header)
         .map_err(|error| format!("read header failed: {error}"))?;
-    let changed = update_header_version(&mut header).map_err(|error| error.to_string())?;
+    let changed = set_version(&mut header).map_err(|error| error.to_string())?;
     if !changed {
         return Ok(Outcome::Skipped);
     }
@@ -550,7 +552,7 @@ fn ion_file_has_current_version(path: &Path) -> bool {
     if file.read_exact(&mut header).is_err() {
         return false;
     }
-    get_version_from_header(&header) == Some(CURRENT_VERSION)
+    version_of(&header) == Some(CURRENT_VERSION)
 }
 
 #[derive(Debug, Clone)]
@@ -1069,7 +1071,6 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
                 },
                 |in_path, out_path| {
                     let options = ConvertOptions {
-                        output: Some(out_path.to_path_buf()),
                         kind: ConvertKind::IonToMzml,
                         read: ReadOptions {
                             parallel: matches!(encoding, Encoding::WithinFileParallel),
@@ -1077,7 +1078,7 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
                         },
                         ..Default::default()
                     };
-                    ionic::convert(in_path, options)
+                    ionic::convert_file(in_path, out_path, &options)
                         .map(|_| Outcome::Written)
                         .map_err(|e| format!("convert failed: {e}"))
                 },
@@ -1163,9 +1164,9 @@ fn mzml_output_matches_source(
     if output_len == 0 {
         return false;
     }
-    let Ok(source) = IonReader::open_file(
+    let Ok(source) = IonReader::open(
         source_path,
-        ReadOptions {
+        &ReadOptions {
             parallel,
             ..ReadOptions::default()
         },

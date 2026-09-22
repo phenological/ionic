@@ -15,6 +15,7 @@ fn window_span(width: f64, from: f64, to: f64, window_count: usize) -> Option<(u
     ))
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataXY {
     pub x: NumericArray,
@@ -42,13 +43,6 @@ impl NumericArray {
         }
     }
 
-    pub fn as_f64(&self) -> Option<&[f64]> {
-        match self {
-            NumericArray::F64(values) => Some(values),
-            _ => None,
-        }
-    }
-
     pub(crate) fn extend_f64(&self, out: &mut Vec<f64>) {
         match self {
             NumericArray::F64(values) => out.extend_from_slice(values),
@@ -62,25 +56,30 @@ impl NumericArray {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Pixel {
-    pub x: Range,
-    pub y: Range,
-    pub z: Range,
+pub(crate) struct Pixel {
+    pub(crate) x: Range,
+    pub(crate) y: Range,
+    pub(crate) z: Range,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[allow(private_interfaces)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Select {
+    #[default]
     All,
     Rt(Range),
     Area(Pixel),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Query {
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScanQuery {
     pub mz: Range,
-    pub rt: Range,
+    pub select: Select,
+    pub ms_level: Option<u8>,
 }
 
+#[non_exhaustive]
 pub struct Window<'a> {
     pub index: usize,
     pub summary: &'a ScanSummary,
@@ -121,17 +120,19 @@ fn scan_summary_from_record(record: &SpectrumSummary) -> ScanSummary {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemKind {
+pub(crate) enum ItemKind {
     Spectrum,
     Chromatogram,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
-pub struct ItemSlice {
-    pub item_index: u64,
-    pub array_address_index: u64,
-    pub intensity_address_index: u64,
+pub(crate) struct ItemSlice {
+    pub(crate) item_index: u64,
+    pub(crate) array_address_index: u64,
+    pub(crate) intensity_address_index: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -397,7 +398,7 @@ impl IonReader {
         for block_id in block_ids {
             ranges.push(self.spec_block_byte_range(block_id)?);
         }
-        coalesce_byte_ranges(&mut ranges, gap);
+        merge_ranges(&mut ranges, gap);
         Ok(ranges)
     }
 
@@ -454,10 +455,8 @@ impl IonReader {
 
     pub fn scans_in(
         &mut self,
-        mz: Range,
-        select: Select,
-        ms_level: Option<u8>,
-        visit: &mut dyn FnMut(&Window),
+        query: &ScanQuery,
+        mut visit: impl FnMut(&Window),
     ) -> IonResult<()> {
         self.require_bounds()?;
         let count = self.header.spectrum_count as usize;
@@ -467,13 +466,13 @@ impl IonReader {
             let Some(record) = self.spectrum_summary(index) else {
                 continue;
             };
-            if let Some(level) = ms_level
+            if let Some(level) = query.ms_level
                 && record.ms_level != level
             {
                 continue;
             }
             let summary = scan_summary_from_record(&record);
-            if !scan_is_selected(&select, &summary) {
+            if !scan_is_selected(&query.select, &summary) {
                 continue;
             }
             let Some(refs) = self.spectrum_array_addresses(index) else {
@@ -486,7 +485,7 @@ impl IonReader {
             if !has_mz || !has_intensity {
                 continue;
             }
-            let data = self.read_window(index, mz)?;
+            let data = self.read_window(index, query.mz)?;
             mz_out.clear();
             data.x.extend_f64(&mut mz_out);
             intensity_out.clear();
@@ -577,7 +576,8 @@ impl IonReader {
         Ok(out)
     }
 
-    pub fn candidate_items(
+    #[cfg(test)]
+    pub(crate) fn candidate_items(
         &mut self,
         target: ItemKind,
         axis_accession: u32,
