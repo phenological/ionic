@@ -1,5 +1,6 @@
 use crate::accessions::{INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY};
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ArrayKind {
     Mz,

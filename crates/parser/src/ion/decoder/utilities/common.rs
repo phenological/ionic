@@ -1,8 +1,8 @@
-use cosmoz::{DecompressOptions, Decoder, compressed_size, decompress_into};
+use cosmoz::{DecompressOptions, Decoder, compressed_size};
 
 use crate::ion::{
     IonError, IonResult,
-    attr_meta::{AccessionTail, CV_CODE_UNKNOWN, cv_ref_code_from_str},
+    attr_meta::{AccessionTail, CV_CODE_UNKNOWN, cv_ref_code_from_str, parse_accession_tail},
     decoder::{
         decode::{Metadatum, MetadatumValue},
         utilities::decompression_limit::DecompressionLimit,
@@ -60,8 +60,8 @@ pub(crate) fn read_u32_vec(bytes: &[u8], pos: &mut usize, n: usize) -> IonResult
         .ok_or_else(|| IonError::from("u32 vector length overflows usize"))?;
     let raw = take(bytes, pos, byte_len, "u32 vector")?;
     let mut out = Vec::with_capacity(n);
-    for chunk in raw.chunks_exact(4) {
-        out.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    for chunk in raw.as_chunks::<4>().0 {
+        out.push(u32::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -73,8 +73,8 @@ pub(crate) fn read_f64_vec(bytes: &[u8], pos: &mut usize, n: usize) -> IonResult
         .ok_or_else(|| IonError::from("f64 vector length overflows usize"))?;
     let raw = take(bytes, pos, byte_len, "f64 vector")?;
     let mut out = Vec::with_capacity(n);
-    for chunk in raw.chunks_exact(8) {
-        out.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+    for chunk in raw.as_chunks::<8>().0 {
+        out.push(f64::from_le_bytes(*chunk));
     }
     Ok(out)
 }
@@ -92,8 +92,9 @@ pub(crate) fn decompress_zstd(
     budget.validate(comp.len(), expected)?;
 
     let mut out = vec![0u8; expected];
-    let mut decoder = Decoder::new();
-    let actual = decompress_into(comp, &mut out, &DecompressOptions::default(), &mut decoder)
+    let mut decoder = Decoder::new(&DecompressOptions::default());
+    let actual = decoder
+        .decompress_into(comp, &mut out)
         .map_err(|err| IonError::from(format!("zstd decode failed: {err:?}")))?;
 
     if actual != expected {
@@ -208,30 +209,9 @@ pub(crate) fn sum_string_lengths(string_lengths: &[u32]) -> IonResult<usize> {
     Ok(total)
 }
 
-#[inline]
-pub(crate) fn parse_accession_tail(accession: Option<&str>) -> AccessionTail {
-    let s = accession.unwrap_or("");
-    let tail = s.rsplit_once(':').map(|(_, t)| t).unwrap_or(s);
-    let mut v: u32 = 0;
-    let mut saw = false;
-    for b in tail.bytes() {
-        if b.is_ascii_digit() {
-            saw = true;
-            v = match v
-                .checked_mul(10)
-                .and_then(|x| x.checked_add((b - b'0') as u32))
-            {
-                Some(n) => n,
-                None => return AccessionTail::from_raw(0),
-            };
-        }
-    }
-    AccessionTail::from_raw(if saw { v } else { 0 })
-}
-
 #[cfg(test)]
 mod tests {
-    use cosmoz::{CompressOptions, Encoder, compress_into, max_compressed_size};
+    use cosmoz::{CompressOptions, Encoder};
 
     use super::*;
     use crate::ion::decoder::utilities::decompression_limit::DecompressionLimit;
@@ -239,8 +219,8 @@ mod tests {
     fn compress_to_frame(data: &[u8]) -> Vec<u8> {
         let options = CompressOptions::default();
         let mut encoder = Encoder::new(&options).unwrap();
-        let mut out = vec![0u8; max_compressed_size(data.len(), &options)];
-        let written = compress_into(data, &mut out, &options, &mut encoder).unwrap();
+        let mut out = vec![0u8; encoder.max_compressed_size(data.len())];
+        let written = encoder.compress_into(data, &mut out).unwrap();
         out.truncate(written);
         out
     }

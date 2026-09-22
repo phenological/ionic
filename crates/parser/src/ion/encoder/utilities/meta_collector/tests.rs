@@ -142,7 +142,8 @@ fn encode_user_param_with_value_uses_separator() {
 #[test]
 fn compress_bytes_if_enabled_level_zero_is_identity() {
     let input = vec![1u8, 2, 3, 4];
-    assert_eq!(compress_bytes_if_enabled(input.clone(), 0), input);
+    let mut encoder = new_meta_encoder(0).unwrap();
+    assert_eq!(compress_bytes_if_enabled(input.clone(), 0, &mut encoder), input);
 }
 
 #[test]
@@ -182,35 +183,54 @@ fn collector_global_meta_on_empty_mzml_produces_run_buffer() {
     assert!(!meta.ids.is_empty());
 }
 
-#[test]
-fn grouped_metadata_keeps_values_local_to_each_group() {
+fn open_grouped(
+    bytes: &[u8],
+    group_count: u64,
+    totals: crate::ion::meta_groups::MetaTotals,
+) -> crate::ion::IonResult<crate::ion::utilities::MetaGroupReader> {
     use crate::ion::{
-        DecompressionLimit,
-        decoder::decode::MetadatumValue,
+        ByteRange,
+        decoder::{decode::ReadOptions, utilities::byte_source::BytesSource},
         format::CODEC_NONE,
-        meta_groups::MetaTotals,
+        meta_groups::MetaSection,
         utilities::{MetaGroupReader, meta_column_layout::MetaColumnLayout},
     };
+
+    let section = MetaSection {
+        range: ByteRange {
+            offset: 0,
+            length: bytes.len() as u64,
+        },
+        group_count,
+        group_size: 1,
+        item_count: 3,
+        totals,
+    };
+    MetaGroupReader::open(
+        Arc::new(BytesSource::new(Arc::from(bytes))),
+        section,
+        CODEC_NONE,
+        &ReadOptions::default(),
+        MetaColumnLayout::new(),
+    )
+}
+
+#[test]
+fn grouped_metadata_keeps_values_local_to_each_group() {
+    use crate::ion::{decoder::decode::MetadatumValue, meta_groups::MetaTotals};
 
     let grouped = three_item_grouped();
     assert_eq!(grouped.group_count, 3);
 
-    let mut reader = MetaGroupReader::new(
-        Arc::from(grouped_bytes(&grouped)),
+    let mut reader = open_grouped(
+        grouped_bytes(&grouped),
         grouped.group_count,
-        1,
-        3,
         MetaTotals {
             rows: 3,
             numeric: 3,
             string: 0,
             uncompressed: grouped.uncompressed_size,
         },
-        CODEC_NONE,
-        true,
-        DecompressionLimit::default(),
-        64 * 1024 * 1024,
-        MetaColumnLayout::new(),
     )
     .unwrap();
 
@@ -243,7 +263,7 @@ fn three_item_grouped() -> grouper::GroupedSection {
         unit_name: None,
         unit_accession: None,
     };
-    let mut grouper = grouper::MetaGrouper::new(1, 0, SectionChunk::memory(0));
+    let mut grouper = grouper::MetaGrouper::new(1, 0, SectionChunk::memory(0)).unwrap();
     for (index, value) in ["10.5", "20.5", "30.5"].iter().enumerate() {
         let mut buffer = MetaParamBuffer::new();
         buffer.push(TagId::CvParam, (index + 1) as u32, 0, make_cv(value));
@@ -259,60 +279,36 @@ fn grouped_bytes(grouped: &grouper::GroupedSection) -> &[u8] {
 
 #[test]
 fn metadata_reader_rejects_wrong_uncompressed_total() {
-    use crate::ion::{
-        DecompressionLimit,
-        format::CODEC_NONE,
-        meta_groups::MetaTotals,
-        utilities::{MetaGroupReader, meta_column_layout::MetaColumnLayout},
-    };
+    use crate::ion::meta_groups::MetaTotals;
 
     let grouped = three_item_grouped();
-    let result = MetaGroupReader::new(
-        Arc::from(grouped_bytes(&grouped)),
+    let result = open_grouped(
+        grouped_bytes(&grouped),
         grouped.group_count,
-        1,
-        3,
         MetaTotals {
             rows: 3,
             numeric: 3,
             string: 0,
             uncompressed: grouped.uncompressed_size + 1,
         },
-        CODEC_NONE,
-        true,
-        DecompressionLimit::default(),
-        64 * 1024 * 1024,
-        MetaColumnLayout::new(),
     );
     assert!(result.is_err());
 }
 
 #[test]
 fn metadata_reader_rejects_wrong_row_total() {
-    use crate::ion::{
-        DecompressionLimit,
-        format::CODEC_NONE,
-        meta_groups::MetaTotals,
-        utilities::{MetaGroupReader, meta_column_layout::MetaColumnLayout},
-    };
+    use crate::ion::meta_groups::MetaTotals;
 
     let grouped = three_item_grouped();
-    let reader = MetaGroupReader::new(
-        Arc::from(grouped_bytes(&grouped)),
+    let reader = open_grouped(
+        grouped_bytes(&grouped),
         grouped.group_count,
-        1,
-        3,
         MetaTotals {
             rows: 99,
             numeric: 3,
             string: 0,
             uncompressed: grouped.uncompressed_size,
         },
-        CODEC_NONE,
-        true,
-        DecompressionLimit::default(),
-        64 * 1024 * 1024,
-        MetaColumnLayout::new(),
     )
     .unwrap();
     assert!(reader.read_all().is_err());
@@ -320,12 +316,7 @@ fn metadata_reader_rejects_wrong_row_total() {
 
 #[test]
 fn metadata_reader_rejects_payload_into_directory() {
-    use crate::ion::{
-        DecompressionLimit,
-        format::CODEC_NONE,
-        meta_groups::{META_GROUP_ENTRY_SIZE, MetaTotals},
-        utilities::{MetaGroupReader, meta_column_layout::MetaColumnLayout},
-    };
+    use crate::ion::meta_groups::{META_GROUP_ENTRY_SIZE, MetaTotals};
 
     let grouped = three_item_grouped();
     let mut bytes = grouped_bytes(&grouped).to_vec();
@@ -333,22 +324,15 @@ fn metadata_reader_rejects_payload_into_directory() {
     bytes[directory_start..directory_start + 8]
         .copy_from_slice(&(directory_start as u64).to_le_bytes());
 
-    let mut reader = MetaGroupReader::new(
-        Arc::from(bytes.as_slice()),
+    let mut reader = open_grouped(
+        &bytes,
         grouped.group_count,
-        1,
-        3,
         MetaTotals {
             rows: 3,
             numeric: 3,
             string: 0,
             uncompressed: grouped.uncompressed_size,
         },
-        CODEC_NONE,
-        true,
-        DecompressionLimit::default(),
-        64 * 1024 * 1024,
-        MetaColumnLayout::new(),
     )
     .unwrap();
     assert!(reader.read_item(0).is_err());
@@ -443,7 +427,7 @@ fn group_local_node_ids_across_group_boundaries() {
     let mut output = Vec::new();
     write_mzml_to_ion(
         &mzml,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 0,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -467,13 +451,13 @@ fn group_local_node_ids_across_group_boundaries() {
     }
 
     let mut decoder =
-        IonReader::open(&output, ReadOptions::default()).expect("failed to open decoder");
+        IonReader::from_bytes(&output, &ReadOptions::default()).expect("failed to open decoder");
 
     let first_rows = decoder
-        .spectrum_metadata_at(0)
+        .spectrum_metadata_rows_at(0)
         .expect("failed to read first spectrum metadata");
     let second_rows = decoder
-        .spectrum_metadata_at(8192)
+        .spectrum_metadata_rows_at(8192)
         .expect("failed to read second spectrum metadata");
 
     let first_list = find_row(&first_rows, TagId::SpectrumList, LOCAL_LIST_NODE_ID);
@@ -569,7 +553,7 @@ fn product_own_cv_params_parent_to_product_list_not_to_the_product_itself() {
     let mut output = Vec::new();
     write_mzml_to_ion(
         &mzml,
-        WriteOptions {
+        &WriteOptions {
             compression_level: 0,
             force_f32: false,
             block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
@@ -587,9 +571,9 @@ fn product_own_cv_params_parent_to_product_list_not_to_the_product_itself() {
     };
 
     let mut decoder =
-        IonReader::open(&output, ReadOptions::default()).expect("failed to open decoder");
+        IonReader::from_bytes(&output, &ReadOptions::default()).expect("failed to open decoder");
     let rows = decoder
-        .spectrum_metadata_at(0)
+        .spectrum_metadata_rows_at(0)
         .expect("failed to read spectrum metadata");
 
     let product_row = rows

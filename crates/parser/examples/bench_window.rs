@@ -1,6 +1,6 @@
 use std::{path::Path, time::Instant};
 
-use ionic::ion::{IonReader, Range, ReadOptions};
+use ionic::{ArrayKind, IonReader, Range, ReadOptions};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -20,7 +20,7 @@ fn main() {
 }
 
 fn run(path: &str, sample_count: usize) -> Result<(), String> {
-    let mut ion = IonReader::open_file(Path::new(path), ReadOptions::default())
+    let mut ion = IonReader::open(Path::new(path), &ReadOptions::default())
         .map_err(|error| format!("cannot open {path}: {error}"))?;
 
     let total_spectra = ion.spectrum_count() as usize;
@@ -74,8 +74,10 @@ struct Reading {
 }
 
 fn read_full(ion: &mut IonReader, index: usize) -> Result<Vec<f64>, String> {
-    ion.read_window(
+    ion.spectrum_window(
         index,
+        ArrayKind::Mz,
+        ArrayKind::Intensity,
         Range {
             from: 0.0,
             to: f64::MAX,
@@ -97,8 +99,10 @@ fn measure(ion: &mut IonReader, sample: usize, low: f64, high: f64) -> Result<Re
     let mut points = 0usize;
     for index in 0..sample {
         let window = ion
-            .read_window(
+            .spectrum_window(
                 index,
+                ArrayKind::Mz,
+                ArrayKind::Intensity,
                 Range {
                     from: low,
                     to: high,

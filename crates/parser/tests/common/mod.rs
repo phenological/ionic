@@ -13,7 +13,7 @@ use std::{collections::BTreeSet, fs, path::PathBuf, sync::OnceLock};
 #[allow(unused_imports)]
 pub(crate) use binary_ext::BinaryDataExt;
 use ionic::{
-    ion::{IonReader, IonResult, ReadOptions, WriteOptions, write_mzml_to_ion},
+    IonReader, IonResult, ReadOptions, WriteOptions,
     mzml::{
         parse_mzml::{parse_indexed_mzml, parse_mzml},
         structs::*,
@@ -50,6 +50,25 @@ pub(crate) fn parse_indexed(rel: &str) -> IndexedmzML {
         .unwrap_or_else(|e| panic!("parse_indexed_mzml failed for {rel}: {e}"))
 }
 
+pub(crate) fn write_mzml_to_ion(
+    mzml: &MzML,
+    options: WriteOptions,
+    output: &mut Vec<u8>,
+) -> IonResult<()> {
+    let mut writer = ionic::IonWriter::to(output, mzml, &options)?;
+    if let Some(list) = &mzml.run.spectrum_list {
+        for spectrum in &list.spectra {
+            writer.write_spectrum(spectrum)?;
+        }
+    }
+    if let Some(list) = &mzml.run.chromatogram_list {
+        for chromatogram in &list.chromatograms {
+            writer.write_chromatogram(chromatogram)?;
+        }
+    }
+    writer.finish()
+}
+
 pub(crate) fn encode_to_ion(mzml: &MzML, compression_level: u8, force_f32: bool) -> Vec<u8> {
     let mut out = Vec::new();
     write_mzml_to_ion(
@@ -66,7 +85,7 @@ pub(crate) fn encode_to_ion(mzml: &MzML, compression_level: u8, force_f32: bool)
 }
 
 pub(crate) fn decode_ion(bytes: &[u8]) -> IonResult<MzML> {
-    let mut decoder = IonReader::open(bytes, ReadOptions::default())?;
+    let mut decoder = IonReader::from_bytes(bytes, &ReadOptions::default())?;
     decoder.to_mzml()
 }
 

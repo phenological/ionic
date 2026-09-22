@@ -56,7 +56,7 @@ fn update_in_place_stamps_version_then_skips() {
     let (ok, stdout, _) = run_update(&["-i".as_ref(), dir.path().as_ref()]);
     assert!(ok, "got: {stdout}");
     assert!(stdout.contains("ok=1"), "got: {stdout}");
-    assert_eq!(version_of(&file), ionic::ion::CURRENT_VERSION);
+    assert_eq!(version_of(&file), ionic::format::CURRENT_VERSION);
     assert!(header_crc_matches(&file));
     assert_eq!(fs::metadata(&file).unwrap().len(), original_len);
     assert!(check_passes(&file));
@@ -114,7 +114,7 @@ fn update_to_output_path_leaves_source_untouched() {
     assert!(ok, "got: {stdout}");
     assert!(stdout.contains("ok=1"), "got: {stdout}");
     assert_eq!(version_of(&source), 0);
-    assert_eq!(version_of(&target), ionic::ion::CURRENT_VERSION);
+    assert_eq!(version_of(&target), ionic::format::CURRENT_VERSION);
     assert!(check_passes(&target));
 
     let (ok, stdout, _) = run_update(&args);
@@ -126,7 +126,7 @@ fn update_to_output_path_leaves_source_untouched() {
     let (ok, stdout, _) = run_update(&args);
     assert!(ok, "got: {stdout}");
     assert!(stdout.contains("ok=1"), "got: {stdout}");
-    assert_eq!(version_of(&target), ionic::ion::CURRENT_VERSION);
+    assert_eq!(version_of(&target), ionic::format::CURRENT_VERSION);
 }
 
 #[test]

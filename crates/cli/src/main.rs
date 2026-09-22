@@ -1,9 +1,9 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{IsTerminal, Read, Seek, SeekFrom, Write, stderr, stdout},
+    io::{Read, Seek, SeekFrom, Write, stderr, stdout},
     path::{Path, PathBuf},
     sync::{
-        Mutex, OnceLock,
+        Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     time::Instant,
@@ -15,21 +15,18 @@ use clap::{
     builder::styling::{AnsiColor, Color, Style, Styles},
 };
 use ionic::{
-    ConvertKind, ConvertOptions,
-    ion::{
-        CURRENT_VERSION, DEFAULT_MZ_WINDOW, HEADER_SIZE, IonReader, ReadOptions, SectionStorage,
-        WriteOptions, get_version_from_header, update_header_version,
-    },
+    ConvertKind, ConvertOptions, IonReader, ReadOptions, SectionStorage, WriteOptions,
+    format::{CURRENT_VERSION, DEFAULT_MZ_WINDOW, HEADER_SIZE, set_version, version_of},
     mzml::{parse_mzml::parse_mzml, structs::*},
 };
 use mimalloc::MiMalloc;
-use rayon::{ThreadPoolBuilder, prelude::*};
+use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 use regex::Regex;
 use serde::Serialize;
 
 mod utilities;
 
-use utilities::{TempOutput, check_ion_file, ion_file_is_valid, sweep_orphans};
+use utilities::{TempOutput, check_ion_file, color, ion_file_is_valid, sweep_orphans};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -37,38 +34,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MB: f64 = 1024.0 * 1024.0;
-
-static COLOR_ENABLED: OnceLock<bool> = OnceLock::new();
-
-fn color_enabled() -> bool {
-    *COLOR_ENABLED.get_or_init(|| {
-        std::env::var_os("NO_COLOR").is_none() && stdout().is_terminal() && stderr().is_terminal()
-    })
-}
-
-fn ansi(code: &'static str) -> &'static str {
-    if color_enabled() { code } else { "" }
-}
-
-fn ansi_reset() -> &'static str {
-    ansi("\x1b[0m")
-}
-
-fn ansi_green() -> &'static str {
-    ansi("\x1b[1;32m")
-}
-
-fn ansi_yellow() -> &'static str {
-    ansi("\x1b[1;33m")
-}
-
-fn ansi_red() -> &'static str {
-    ansi("\x1b[1;31m")
-}
-
-fn ansi_blue() -> &'static str {
-    ansi("\x1b[1;34m")
-}
 
 const AFTER_HELP: &str = "
 \x1b[1;33mQUICK REFERENCE\x1b[0m (full flags are in `ionic convert --help` / `ionic cat --help`)
@@ -258,12 +223,6 @@ impl SectionStorageArg {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Encoding {
-    WithinFileParallel,
-    FileLevelParallel,
-}
-
 #[derive(Args)]
 #[command(
     group(
@@ -296,8 +255,6 @@ struct CatArgs {
 }
 
 fn main() -> std::process::ExitCode {
-    color_enabled();
-
     let mut cmd = Cli::command();
     cmd = cmd
         .styles(cli_styles())
@@ -360,7 +317,7 @@ fn cat(cmd: CatArgs) -> Result<(), String> {
     if let Some(n) = cmd.chrom_full {
         return cat_chromatogram(&file_path, n, true);
     }
-    let mut mzml = read_mzml_or_ion(&file_path)?;
+    let mut mzml = read_mzml_or_ion(&file_path, cmd.full)?;
     if !cmd.full {
         trim_mzml_for_cat(&mut mzml);
     }
@@ -369,56 +326,99 @@ fn cat(cmd: CatArgs) -> Result<(), String> {
 
 fn cat_spectrum(file_path: &Path, index_1based: u32, with_arrays: bool) -> Result<(), String> {
     let index = (index_1based - 1) as usize;
-    let mut spectrum = load_spectrum_at(file_path, index)?
+    let spectrum = load_spectrum_at(file_path, index, with_arrays)?
         .ok_or_else(|| format!("spectrum {index_1based} is out of range"))?;
-    if !with_arrays {
-        spectrum.binary_data_array_list = None;
-    }
     print_json_compact(&spectrum)
 }
 
 fn cat_chromatogram(file_path: &Path, index_1based: u32, with_arrays: bool) -> Result<(), String> {
     let index = (index_1based - 1) as usize;
-    let mut chromatogram = load_chromatogram_at(file_path, index)?
+    let chromatogram = load_chromatogram_at(file_path, index, with_arrays)?
         .ok_or_else(|| format!("chromatogram {index_1based} is out of range"))?;
-    if !with_arrays {
-        chromatogram.binary_data_array_list = None;
-    }
     print_json_compact(&chromatogram)
 }
 
-fn load_spectrum_at(file_path: &Path, index: usize) -> Result<Option<Spectrum>, String> {
+fn ion_result_to_option<T>(result: ionic::IonResult<T>) -> Result<Option<T>, String> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(ionic::IonError::OutOfRange { .. }) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn load_spectrum_at(
+    file_path: &Path,
+    index: usize,
+    with_arrays: bool,
+) -> Result<Option<Spectrum>, String> {
     match file_ext_lower(file_path).as_str() {
         "ion" => {
-            let mut ion = IonReader::open_file(file_path, ReadOptions::default())
-                .map_err(|e| format!("IonReader::open_file failed: {e}"))?;
-            ion.spectrum(index)
-                .map_err(|e| format!("get_spectrum failed: {e}"))
+            let mut ion = IonReader::open(file_path, &ReadOptions::default())
+                .map_err(|e| format!("IonReader::open failed: {e}"))?;
+            if with_arrays {
+                let mut mzml = ion.to_mzml().map_err(|e| format!("to_mzml failed: {e}"))?;
+                Ok(mzml.run.spectrum_list.as_mut().and_then(|l| {
+                    (index < l.spectra.len()).then(|| std::mem::take(&mut l.spectra[index]))
+                }))
+            } else {
+                let spectrum = ion_result_to_option(ion.spectrum_metadata_at(index))?;
+                Ok(spectrum.map(|mut spectrum| {
+                    spectrum.binary_data_array_list = None;
+                    spectrum
+                }))
+            }
         }
         "mzml" => {
             let bytes = fs::read(file_path).map_err(|e| format!("read failed: {e}"))?;
             let mut mzml = parse_mzml(&bytes).map_err(|e| format!("parse_mzml failed: {e}"))?;
             Ok(mzml.run.spectrum_list.as_mut().and_then(|l| {
-                (index < l.spectra.len()).then(|| std::mem::take(&mut l.spectra[index]))
+                (index < l.spectra.len()).then(|| {
+                    let mut spectrum = std::mem::take(&mut l.spectra[index]);
+                    if !with_arrays {
+                        spectrum.binary_data_array_list = None;
+                    }
+                    spectrum
+                })
             }))
         }
         other => Err(format!("unsupported file extension: {other:?}")),
     }
 }
 
-fn load_chromatogram_at(file_path: &Path, index: usize) -> Result<Option<Chromatogram>, String> {
+fn load_chromatogram_at(
+    file_path: &Path,
+    index: usize,
+    with_arrays: bool,
+) -> Result<Option<Chromatogram>, String> {
     match file_ext_lower(file_path).as_str() {
         "ion" => {
-            let mut ion = IonReader::open_file(file_path, ReadOptions::default())
-                .map_err(|e| format!("IonReader::open_file failed: {e}"))?;
-            ion.chromatogram(index)
-                .map_err(|e| format!("get_chromatogram failed: {e}"))
+            let mut ion = IonReader::open(file_path, &ReadOptions::default())
+                .map_err(|e| format!("IonReader::open failed: {e}"))?;
+            if with_arrays {
+                let mut mzml = ion.to_mzml().map_err(|e| format!("to_mzml failed: {e}"))?;
+                Ok(mzml.run.chromatogram_list.as_mut().and_then(|l| {
+                    (index < l.chromatograms.len())
+                        .then(|| std::mem::take(&mut l.chromatograms[index]))
+                }))
+            } else {
+                let chromatogram = ion_result_to_option(ion.chromatogram_metadata_at(index))?;
+                Ok(chromatogram.map(|mut chromatogram| {
+                    chromatogram.binary_data_array_list = None;
+                    chromatogram
+                }))
+            }
         }
         "mzml" => {
             let bytes = fs::read(file_path).map_err(|e| format!("read failed: {e}"))?;
             let mut mzml = parse_mzml(&bytes).map_err(|e| format!("parse_mzml failed: {e}"))?;
             Ok(mzml.run.chromatogram_list.as_mut().and_then(|l| {
-                (index < l.chromatograms.len()).then(|| std::mem::take(&mut l.chromatograms[index]))
+                (index < l.chromatograms.len()).then(|| {
+                    let mut chromatogram = std::mem::take(&mut l.chromatograms[index]);
+                    if !with_arrays {
+                        chromatogram.binary_data_array_list = None;
+                    }
+                    chromatogram
+                })
             }))
         }
         other => Err(format!("unsupported file extension: {other:?}")),
@@ -432,12 +432,12 @@ fn file_ext_lower(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-fn out_name_for_mzml_file(path: &Path, out_ext: &str) -> Option<String> {
+fn out_name_for_mzml_file(path: &Path) -> Option<String> {
     if file_ext_lower(path) != "mzml" {
         return None;
     }
     let stem = path.file_stem()?.to_string_lossy();
-    Some(format!("{stem}.{out_ext}"))
+    Some(format!("{stem}.ion"))
 }
 
 fn out_name_for_bin_file_as_mzml(path: &Path) -> Option<String> {
@@ -467,13 +467,31 @@ fn in_place_output_root(input_root: &Path) -> PathBuf {
     }
 }
 
-fn read_mzml_or_ion(file_path: &Path) -> Result<MzML, String> {
+fn read_mzml_or_ion(file_path: &Path, with_items: bool) -> Result<MzML, String> {
     let ext = file_ext_lower(file_path);
 
     if ext == "ion" {
-        let ion = IonReader::open_file(file_path, ReadOptions::default())
-            .map_err(|e| format!("IonReader::open_file failed: {e}"))?;
-        return ion.metadata().map_err(|e| format!("metadata failed: {e}"));
+        let mut ion = IonReader::open(file_path, &ReadOptions::default())
+            .map_err(|e| format!("IonReader::open failed: {e}"))?;
+        let mut mzml = ion
+            .global_metadata()
+            .map_err(|e| format!("metadata failed: {e}"))?;
+        if !with_items {
+            return Ok(mzml);
+        }
+        if let Some(list) = mzml.run.spectrum_list.as_mut() {
+            list.spectra = (0..ion.spectrum_count() as usize)
+                .map(|index| ion.spectrum_metadata_at(index))
+                .collect::<Result<_, _>>()
+                .map_err(|e| format!("spectrum metadata failed: {e}"))?;
+        }
+        if let Some(list) = mzml.run.chromatogram_list.as_mut() {
+            list.chromatograms = (0..ion.chromatogram_count() as usize)
+                .map(|index| ion.chromatogram_metadata_at(index))
+                .collect::<Result<_, _>>()
+                .map_err(|e| format!("chromatogram metadata failed: {e}"))?;
+        }
+        return Ok(mzml);
     }
     if ext == "mzml" {
         let bytes = fs::read(file_path).map_err(|e| format!("read failed: {e}"))?;
@@ -488,17 +506,16 @@ fn read_mzml_or_ion(file_path: &Path) -> Result<MzML, String> {
 fn write_mzml_as_ion(
     input_path: &Path,
     output_path: &Path,
-    config: WriteOptions,
+    options: WriteOptions,
 ) -> Result<(), String> {
     sweep_orphans(output_path)?;
     let temp_output = TempOutput::new(output_path)?;
-    let options = ConvertOptions {
-        output: Some(temp_output.path().to_path_buf()),
+    let convert_options = ConvertOptions {
         kind: ConvertKind::MzmlToIon,
-        write: config,
+        write: options,
         ..Default::default()
     };
-    ionic::convert(input_path, options).map_err(|error| error.to_string())?;
+    ionic::convert_file(input_path, temp_output.path(), &convert_options).map_err(|error| error.to_string())?;
     temp_output.move_to(output_path)
 }
 
@@ -516,7 +533,7 @@ fn update_version_in_file(path: &Path) -> Result<Outcome, String> {
     let mut header = [0u8; HEADER_SIZE];
     file.read_exact(&mut header)
         .map_err(|error| format!("read header failed: {error}"))?;
-    let changed = update_header_version(&mut header).map_err(|error| error.to_string())?;
+    let changed = set_version(&mut header).map_err(|error| error.to_string())?;
     if !changed {
         return Ok(Outcome::Skipped);
     }
@@ -550,7 +567,7 @@ fn ion_file_has_current_version(path: &Path) -> bool {
     if file.read_exact(&mut header).is_err() {
         return false;
     }
-    get_version_from_header(&header) == Some(CURRENT_VERSION)
+    version_of(&header) == Some(CURRENT_VERSION)
 }
 
 #[derive(Debug, Clone)]
@@ -720,26 +737,6 @@ fn size_to_bytes(value: f64, unit_bytes: f64, flag: &str) -> Result<usize, Strin
     Ok(bytes as usize)
 }
 
-struct Palette {
-    reset: &'static str,
-    green: &'static str,
-    yellow: &'static str,
-    red: &'static str,
-    blue: &'static str,
-}
-
-impl Palette {
-    fn current() -> Self {
-        Self {
-            reset: ansi_reset(),
-            green: ansi_green(),
-            yellow: ansi_yellow(),
-            red: ansi_red(),
-            blue: ansi_blue(),
-        }
-    }
-}
-
 struct ConvertCounters {
     print_lock: Mutex<()>,
     done: AtomicUsize,
@@ -799,7 +796,6 @@ fn print_convert_totals(counters: &ConvertCounters, elapsed: std::time::Duration
 
 struct ConversionJob<'a> {
     counters: &'a ConvertCounters,
-    palette: &'a Palette,
     input_root: &'a Path,
     output_root: &'a Path,
     overwrite: bool,
@@ -875,16 +871,16 @@ impl<'a> ConversionJob<'a> {
         let n = self.counters.next_step();
         let elapsed_s = t0.elapsed().as_secs_f64();
 
-        let (tag, color) = if fixing_bad_output {
-            ("[fixed]", self.palette.blue)
+        let (tag, tag_color) = if fixing_bad_output {
+            ("[fixed]", color::blue())
         } else {
-            ("[ok]", self.palette.green)
+            ("[ok]", color::green())
         };
         let name = basename(&out_path);
-        let reset = self.palette.reset;
+        let reset = color::reset();
         let total = self.total;
         let line = format!(
-            "{color}{tag}{reset} [{n}/{total}] output: {name}  input={in_mb:.2} MB, output={out_mb:.2} MB, time={elapsed_s:.3}s"
+            "{tag_color}{tag}{reset} [{n}/{total}] output: {name}  input={in_mb:.2} MB, output={out_mb:.2} MB, time={elapsed_s:.3}s"
         );
         print_progress_line(&self.counters.print_lock, false, &line);
     }
@@ -894,8 +890,8 @@ impl<'a> ConversionJob<'a> {
         self.counters.failed.fetch_add(1, Ordering::Relaxed);
         let n = self.counters.next_step();
         let name = basename(path);
-        let red = self.palette.red;
-        let reset = self.palette.reset;
+        let red = color::red();
+        let reset = color::reset();
         let total = self.total;
         let line = format!("{red}[error]{reset} [{n}/{total}] {name}: {message}");
         print_progress_line(&self.counters.print_lock, true, &line);
@@ -905,8 +901,8 @@ impl<'a> ConversionJob<'a> {
         self.counters.skipped.fetch_add(1, Ordering::Relaxed);
         let n = self.counters.next_step();
         let name = basename(in_path);
-        let yellow = self.palette.yellow;
-        let reset = self.palette.reset;
+        let yellow = color::yellow();
+        let reset = color::reset();
         let total = self.total;
         let line = format!("{yellow}[skipped]{reset} [{n}/{total}] {name}");
         print_progress_line(&self.counters.print_lock, false, &line);
@@ -918,14 +914,38 @@ impl<'a> ConversionJob<'a> {
         let in_mb = megabytes_of(in_path);
         let out_mb = out_len as f64 / MB;
         let name = basename(out_path);
-        let yellow = self.palette.yellow;
-        let reset = self.palette.reset;
+        let yellow = color::yellow();
+        let reset = color::reset();
         let total = self.total;
         let line = format!(
             "{yellow}[skipped]{reset} [{n}/{total}] {name}  input={in_mb:.2} MB, output={out_mb:.2} MB"
         );
         print_progress_line(&self.counters.print_lock, false, &line);
     }
+}
+
+fn run_jobs(
+    job: &ConversionJob,
+    files: &[PathBuf],
+    parallel_inside_file: bool,
+    pool: &ThreadPool,
+    t_all: Instant,
+    work: impl Fn(&PathBuf) + Sync,
+) -> Result<(), String> {
+    pool.install(|| {
+        if parallel_inside_file {
+            files.iter().for_each(&work);
+        } else {
+            files.par_iter().for_each(&work);
+        }
+    });
+
+    print_convert_totals(job.counters, t_all.elapsed());
+
+    if job.counters.had_any_failure() {
+        return Err("some files failed".to_string());
+    }
+    Ok(())
 }
 
 fn convert(cmd: ConvertArgs) -> Result<(), String> {
@@ -964,11 +984,7 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
         .build()
         .map_err(|e| format!("rayon thread pool init failed: {e}"))?;
 
-    let encoding = if cmd.many_files {
-        Encoding::FileLevelParallel
-    } else {
-        Encoding::WithinFileParallel
-    };
+    let parallel_inside_file = !cmd.many_files;
 
     let t_all = Instant::now();
 
@@ -978,13 +994,9 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
     let ion_to_mzml = cmd.which.ion_to_mzml;
     let update = cmd.which.update;
 
-    let palette = Palette::current();
     let counters = ConvertCounters::new();
 
     if mzml_to_ion {
-        let out_ext = "ion";
-        let f32_compress = cmd.force_f32;
-
         let files = collect_files_with_exts(&input_root, &["mzml"], filter.as_deref())?;
         if files.is_empty() {
             return Err(format!(
@@ -995,7 +1007,6 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
 
         let job = ConversionJob {
             counters: &counters,
-            palette: &palette,
             input_root: &input_root,
             output_root: &output_root,
             overwrite: cmd.overwrite,
@@ -1004,17 +1015,17 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
 
         let config = WriteOptions {
             compression_level: cmd.compression_level,
-            force_f32: f32_compress,
+            force_f32: cmd.force_f32,
             block_size,
-            parallel: matches!(encoding, Encoding::WithinFileParallel),
+            parallel: parallel_inside_file,
             section_storage: cmd.section_storage.storage(),
             mz_window: cmd.mz_window,
         };
 
-        let convert_mzml_to_ion = |in_path: &PathBuf| {
+        let work = |in_path: &PathBuf| {
             job.run(
                 in_path,
-                |p| out_name_for_mzml_file(p, out_ext),
+                out_name_for_mzml_file,
                 |_in_path, out_path, _file_len| ion_file_is_valid(out_path),
                 |in_path, out_path| {
                     write_mzml_as_ion(in_path, out_path, config)
@@ -1024,17 +1035,7 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
             );
         };
 
-        pool.install(|| match encoding {
-            Encoding::FileLevelParallel => files.par_iter().for_each(convert_mzml_to_ion),
-            Encoding::WithinFileParallel => files.iter().for_each(convert_mzml_to_ion),
-        });
-
-        print_convert_totals(&counters, t_all.elapsed());
-
-        if counters.had_any_failure() {
-            return Err("some files failed".to_string());
-        }
-        return Ok(());
+        return run_jobs(&job, &files, parallel_inside_file, &pool, t_all, work);
     }
 
     if ion_to_mzml {
@@ -1048,53 +1049,36 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
 
         let job = ConversionJob {
             counters: &counters,
-            palette: &palette,
             input_root: &input_root,
             output_root: &output_root,
             overwrite: cmd.overwrite,
             total: files.len(),
         };
 
-        let convert_ion_to_mzml = |in_path: &PathBuf| {
+        let work = |in_path: &PathBuf| {
             job.run(
                 in_path,
                 out_name_for_bin_file_as_mzml,
                 |in_path, out_path, file_len| {
-                    mzml_output_matches_source(
-                        in_path,
-                        out_path,
-                        file_len,
-                        matches!(encoding, Encoding::WithinFileParallel),
-                    )
+                    mzml_output_matches_source(in_path, out_path, file_len, parallel_inside_file)
                 },
                 |in_path, out_path| {
                     let options = ConvertOptions {
-                        output: Some(out_path.to_path_buf()),
                         kind: ConvertKind::IonToMzml,
                         read: ReadOptions {
-                            parallel: matches!(encoding, Encoding::WithinFileParallel),
+                            parallel: parallel_inside_file,
                             ..ReadOptions::default()
                         },
                         ..Default::default()
                     };
-                    ionic::convert(in_path, options)
+                    ionic::convert_file(in_path, out_path, &options)
                         .map(|_| Outcome::Written)
                         .map_err(|e| format!("convert failed: {e}"))
                 },
             );
         };
 
-        pool.install(|| match encoding {
-            Encoding::FileLevelParallel => files.par_iter().for_each(convert_ion_to_mzml),
-            Encoding::WithinFileParallel => files.iter().for_each(convert_ion_to_mzml),
-        });
-
-        print_convert_totals(&counters, t_all.elapsed());
-
-        if counters.had_any_failure() {
-            return Err("some files failed".to_string());
-        }
-        return Ok(());
+        return run_jobs(&job, &files, parallel_inside_file, &pool, t_all, work);
     }
 
     if update {
@@ -1108,14 +1092,13 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
 
         let job = ConversionJob {
             counters: &counters,
-            palette: &palette,
             input_root: &input_root,
             output_root: &output_root,
             overwrite: cmd.overwrite || update_in_place,
             total: files.len(),
         };
 
-        let update_ion_file = |in_path: &PathBuf| {
+        let work = |in_path: &PathBuf| {
             job.run(
                 in_path,
                 out_name_for_ion_file_as_updated_ion,
@@ -1129,17 +1112,7 @@ fn convert(cmd: ConvertArgs) -> Result<(), String> {
             );
         };
 
-        pool.install(|| match encoding {
-            Encoding::FileLevelParallel => files.par_iter().for_each(update_ion_file),
-            Encoding::WithinFileParallel => files.iter().for_each(update_ion_file),
-        });
-
-        print_convert_totals(&counters, t_all.elapsed());
-
-        if counters.had_any_failure() {
-            return Err("some files failed".to_string());
-        }
-        return Ok(());
+        return run_jobs(&job, &files, parallel_inside_file, &pool, t_all, work);
     }
 
     Err("no convert mode selected".to_string())
@@ -1163,9 +1136,9 @@ fn mzml_output_matches_source(
     if output_len == 0 {
         return false;
     }
-    let Ok(source) = IonReader::open_file(
+    let Ok(source) = IonReader::open(
         source_path,
-        ReadOptions {
+        &ReadOptions {
             parallel,
             ..ReadOptions::default()
         },

@@ -2,11 +2,30 @@ mod common;
 
 use std::fs;
 
-use common::helpers::{minimal_file_description, synthetic_binary_data_array};
-use ionic::{
-    ion::{FileWriter, IonReader, ReadOptions, WriteOptions, write_mzml_to_ion},
-    mzml::structs::*,
+use common::{
+    helpers::{minimal_file_description, synthetic_binary_data_array},
+    write_mzml_to_ion,
 };
+use ionic::{IonReader, ReadOptions, WriteOptions, mzml::structs::*};
+
+fn write_via_push(
+    mzml: &MzML,
+    path: &std::path::Path,
+    options: &WriteOptions,
+) -> ionic::IonResult<()> {
+    let mut writer = ionic::IonWriter::create(path, mzml, options)?;
+    if let Some(list) = &mzml.run.spectrum_list {
+        for spectrum in &list.spectra {
+            writer.write_spectrum(spectrum)?;
+        }
+    }
+    if let Some(list) = &mzml.run.chromatogram_list {
+        for chromatogram in &list.chromatograms {
+            writer.write_chromatogram(chromatogram)?;
+        }
+    }
+    writer.finish()
+}
 
 #[test]
 fn memory_mode_roundtrip_multi_spectrum() {
@@ -25,7 +44,7 @@ fn memory_mode_roundtrip_multi_spectrum() {
     .expect("encode should succeed");
     assert!(!buf.is_empty(), "output should not be empty");
 
-    let mut decoder = IonReader::open(&buf, ReadOptions::default()).expect("decoder open");
+    let mut decoder = IonReader::from_bytes(&buf, &ReadOptions::default()).expect("decoder open");
     let decoded = decoder.to_mzml().expect("to_mzml");
 
     let orig_spectra = common::spectra(&mzml);
@@ -48,26 +67,21 @@ fn streaming_mode_roundtrip_via_tempfile() {
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join("ionic_test_streaming.ion");
 
-    let mut file_output = FileWriter::open(temp_path.to_str().unwrap()).unwrap_or_else(|e| {
-        panic!("failed to create FileWriter: {e}");
-    });
-
-    write_mzml_to_ion(
+    write_via_push(
         &mzml,
-        WriteOptions {
+        &temp_path,
+        &WriteOptions {
             compression_level: 3,
             force_f32: false,
             ..Default::default()
         },
-        &mut file_output,
     )
     .expect("streaming encode should succeed");
-    drop(file_output);
 
     let bytes = fs::read(&temp_path).expect("should read temp file");
     assert!(!bytes.is_empty(), "file should not be empty");
 
-    let mut decoder = IonReader::open(&bytes, ReadOptions::default()).expect("decoder open");
+    let mut decoder = IonReader::from_bytes(&bytes, &ReadOptions::default()).expect("decoder open");
     let decoded = decoder.to_mzml().expect("to_mzml");
 
     assert_eq!(
@@ -96,26 +110,23 @@ fn memory_and_streaming_produce_equivalent_results() {
     .expect("memory encode");
 
     let temp_path = std::env::temp_dir().join("ionic_test_equiv.ion");
-    let mut file_output =
-        FileWriter::open(temp_path.to_str().unwrap()).expect("create file output");
-    write_mzml_to_ion(
+    write_via_push(
         &mzml,
-        WriteOptions {
+        &temp_path,
+        &WriteOptions {
             compression_level: 0,
             force_f32: false,
             ..Default::default()
         },
-        &mut file_output,
     )
     .expect("streaming encode");
-    drop(file_output); // ensure flush
     let stream_buf = fs::read(&temp_path).expect("read temp file");
 
-    let mut mem_decoder = IonReader::open(&mem_buf, ReadOptions::default()).expect("mem decoder");
+    let mut mem_decoder = IonReader::from_bytes(&mem_buf, &ReadOptions::default()).expect("mem decoder");
     let mem_decoded = mem_decoder.to_mzml().expect("mem to_mzml");
 
     let mut stream_decoder =
-        IonReader::open(&stream_buf, ReadOptions::default()).expect("stream decoder");
+        IonReader::from_bytes(&stream_buf, &ReadOptions::default()).expect("stream decoder");
     let stream_decoded = stream_decoder.to_mzml().expect("stream to_mzml");
 
     let diffs = common::canonical_diff_paths(&mem_decoded, &stream_decoded);
@@ -182,7 +193,7 @@ fn large_array_roundtrip_stress() {
     )
     .expect("encode large array");
 
-    let mut decoder = IonReader::open(&buf, ReadOptions::default()).expect("decoder open");
+    let mut decoder = IonReader::from_bytes(&buf, &ReadOptions::default()).expect("decoder open");
     let decoded = decoder.to_mzml().expect("to_mzml");
 
     let dec_spectra = common::spectra(&decoded);

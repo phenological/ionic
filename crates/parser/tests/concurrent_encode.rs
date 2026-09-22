@@ -2,11 +2,8 @@ mod common;
 
 use std::{sync::Arc, thread};
 
-use common::{parse_test_file, test_files::PWIZ_TEST_FILES};
-use ionic::{
-    ion::{IonReader, ReadOptions, SectionStorage, WriteOptions, write_mzml_to_ion},
-    mzml::structs::MzML,
-};
+use common::{parse_test_file, test_files::PWIZ_TEST_FILES, write_mzml_to_ion};
+use ionic::{IonReader, ReadOptions, SectionStorage, WriteOptions, mzml::structs::MzML};
 
 const THREADS: usize = 4;
 
@@ -59,12 +56,12 @@ fn encoding_the_same_file_on_many_threads_gives_identical_bytes() {
 fn every_concurrently_encoded_file_keeps_its_spectrum_bounds() {
     let source = Arc::new(parse_test_file(PWIZ_TEST_FILES[4]).clone());
     let expected_count = encode(&source);
-    let expected_count = IonReader::open(&expected_count, ReadOptions::default())
+    let expected_count = IonReader::from_bytes(&expected_count, &ReadOptions::default())
         .expect("reference open must succeed")
         .spectrum_count();
 
     for (thread_index, bytes) in encode_on_threads(source, THREADS).into_iter().enumerate() {
-        let mut reader = IonReader::open(&bytes, ReadOptions::default()).unwrap_or_else(|error| {
+        let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap_or_else(|error| {
             panic!("thread {thread_index} wrote an unreadable file: {error}")
         });
         assert_eq!(
@@ -88,7 +85,7 @@ fn encoding_different_files_at_the_same_time_keeps_every_result_valid() {
     let expected: Vec<u64> = sources
         .iter()
         .map(|source| {
-            IonReader::open(&encode(source), ReadOptions::default())
+            IonReader::from_bytes(&encode(source), &ReadOptions::default())
                 .expect("reference open must succeed")
                 .spectrum_count()
         })
@@ -103,7 +100,7 @@ fn encoding_different_files_at_the_same_time_keeps_every_result_valid() {
     for handle in handles {
         let (index, bytes) = handle.join().expect("encoder thread must not panic");
         let name = PWIZ_TEST_FILES[index];
-        let mut reader = IonReader::open(&bytes, ReadOptions::default())
+        let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default())
             .unwrap_or_else(|error| panic!("{name} came back unreadable: {error}"));
         assert_eq!(
             reader.spectrum_count(),

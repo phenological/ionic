@@ -17,9 +17,10 @@ pub(crate) fn schema() -> &'static SchemaTree {
 }
 
 #[repr(u8)]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum TagId {
+pub enum TagId {
     FileContent = 0,
     SourceFile = 1,
     Contact = 2,
@@ -328,9 +329,7 @@ impl SchemaNode {
         if self.child_key_by_tag.len() != 256 {
             self.child_key_by_tag = default_child_key_by_tag();
         } else {
-            for x in &mut self.child_key_by_tag {
-                *x = None;
-            }
+            self.child_key_by_tag.fill(None);
         }
 
         for (child_key, child) in &mut self.children {
@@ -367,9 +366,7 @@ impl SchemaTree {
         if self.root_key_by_tag.len() != 256 {
             self.root_key_by_tag = default_key_by_tag();
         } else {
-            for x in &mut self.root_key_by_tag {
-                *x = None;
-            }
+            self.root_key_by_tag.fill(None);
         }
 
         for (root_key, root_node) in self.roots.iter_mut() {

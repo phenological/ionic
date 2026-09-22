@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 pub struct SpectrumSummary {
     pub rt: f64,
@@ -15,6 +16,7 @@ pub struct SpectrumSummary {
     pub position_z: u32,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 pub struct ChromatogramSummary {
     pub lowest_mz: f64,

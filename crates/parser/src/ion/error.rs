@@ -3,6 +3,7 @@ use std::{
     fmt::{Display, Formatter},
 };
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IonError {
     Msg(String),
@@ -16,6 +17,7 @@ pub enum IonError {
     MissingChromatogramBounds,
     BadChromatogramBoundsChecksum,
     MalformedChromatogramBounds(String),
+    OutOfRange { index: usize, count: u64 },
 }
 
 pub type IonResult<T> = Result<T, IonError>;
@@ -51,6 +53,9 @@ impl Display for IonError {
             }
             Self::MalformedChromatogramBounds(reason) => {
                 write!(f, "chromatogram bounds (A0) malformed: {reason}")
+            }
+            Self::OutOfRange { index, count } => {
+                write!(f, "index {index} out of range (count is {count})")
             }
         }
     }

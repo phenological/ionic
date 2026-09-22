@@ -26,10 +26,6 @@ pub struct FileWriter {
 
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 impl FileWriter {
-    pub fn open(path: &str) -> IonResult<Self> {
-        Self::open_path(Path::new(path))
-    }
-
     pub fn open_path(path: &Path) -> IonResult<Self> {
         let file = File::create(path).map_err(|err| {
             IonError::from(format!(
@@ -199,7 +195,7 @@ impl SectionChunk {
             .create_new(true)
             .open(&path)
             .map_err(|err| IonError::from(format!("cannot create '{}': {err}", path.display())))?;
-        let packer = Compressor::to(
+        let packer = Compressor::write_to(
             BufWriter::with_capacity(1 << 20, file),
             &CompressOptions {
                 level: get_supported_compression_level(level),
@@ -239,6 +235,7 @@ impl SectionChunk {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_spilled(&self) -> bool {
         #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
         return matches!(self, SectionChunk::Spilled(_));
@@ -317,7 +314,7 @@ fn pad_to_alignment(output: &mut dyn WriteBytes) -> IonResult<u64> {
 
 #[cfg(all(test, not(all(target_arch = "wasm32", not(target_os = "wasi")))))]
 mod tests {
-    use cosmoz::{DecompressOptions, Decoder, decompress_into};
+    use cosmoz::{DecompressOptions, Decoder};
 
     use super::*;
 
@@ -392,10 +389,8 @@ mod tests {
         assert_eq!(crc32, crc32fast::hash(&output));
 
         let mut restored = vec![0u8; written.len()];
-        let mut decoder = Decoder::new();
-        let restored_length =
-            decompress_into(&output, &mut restored, &DecompressOptions::default(), &mut decoder)
-                .unwrap();
+        let mut decoder = Decoder::new(&DecompressOptions::default());
+        let restored_length = decoder.decompress_into(&output, &mut restored).unwrap();
         assert_eq!(restored_length, written.len());
         assert_eq!(restored, written);
     }

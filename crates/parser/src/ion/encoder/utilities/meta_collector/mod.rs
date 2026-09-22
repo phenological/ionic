@@ -7,12 +7,12 @@ mod tests;
 pub(crate) use grouper::{GroupedSection, MetaGrouper, serialize_global_meta_with_counts};
 pub(crate) use schema::MzmlListItem;
 
-use cosmoz::{CompressOptions, Encoder, compress_into, max_compressed_size};
+use cosmoz::{CompressOptions, Encoder};
 
 use crate::{
     accessions::{INTENSITY_ARRAY, MZ_ARRAY, TIME_ARRAY},
     ion::{
-        IonResult,
+        IonError, IonResult,
         attr_meta::{
             AccessionTail, CV_CODE_UNKNOWN, CV_REF_ATTR, attr_cv_param, cv_ref_code_from_str,
             parse_accession_tail,
@@ -615,19 +615,20 @@ impl MetadataWriter for PackedMetaBuilder {
     }
 }
 
-pub(crate) fn compress_bytes_if_enabled(bytes: Vec<u8>, level: u8) -> Vec<u8> {
+pub(crate) fn compress_bytes_if_enabled(bytes: Vec<u8>, level: u8, encoder: &mut Encoder) -> Vec<u8> {
     if level == 0 {
         return bytes;
     }
-    let options = CompressOptions {
-        level: get_supported_compression_level(level),
-        checksum: false,
-        ..Default::default()
-    };
-    let mut encoder = Encoder::new(&options).expect("zstd compression failed");
-    let mut out = vec![0u8; max_compressed_size(bytes.len(), &options)];
-    let written = compress_into(&bytes, &mut out, &options, &mut encoder)
-        .expect("zstd compression failed");
+    let mut out = vec![0u8; encoder.max_compressed_size(bytes.len())];
+    let written = encoder.compress_into(&bytes, &mut out).expect("zstd compression failed");
     out.truncate(written);
     out
+}
+
+pub(crate) fn new_meta_encoder(level: u8) -> IonResult<Encoder> {
+    let options = CompressOptions {
+        level: get_supported_compression_level(level.max(1)),
+        checksum: false,
+    };
+    Encoder::new(&options).map_err(|err| IonError::from(format!("zstd start error: {err:?}")))
 }

@@ -1,5 +1,8 @@
 use super::*;
-use crate::ion::windowing::window_index;
+use crate::{
+    accessions::MZ_ARRAY,
+    ion::{ArrayKind, decoder::utilities::window_directory::WindowEntry, windowing::window_index},
+};
 
 fn window_span(width: f64, from: f64, to: f64, window_count: usize) -> Option<(usize, usize)> {
     if window_count == 0 {
@@ -15,19 +18,11 @@ fn window_span(width: f64, from: f64, to: f64, window_count: usize) -> Option<(u
     ))
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataXY {
     pub x: NumericArray,
     pub y: NumericArray,
-}
-
-impl DataXY {
-    pub(crate) fn empty() -> Self {
-        Self {
-            x: NumericArray::F64(Vec::new()),
-            y: NumericArray::F64(Vec::new()),
-        }
-    }
 }
 
 impl NumericArray {
@@ -39,13 +34,6 @@ impl NumericArray {
             NumericArray::I16(values) => values.iter().map(|&value| value as f64).collect(),
             NumericArray::I32(values) => values.iter().map(|&value| value as f64).collect(),
             NumericArray::I64(values) => values.iter().map(|&value| value as f64).collect(),
-        }
-    }
-
-    pub fn as_f64(&self) -> Option<&[f64]> {
-        match self {
-            NumericArray::F64(values) => Some(values),
-            _ => None,
         }
     }
 
@@ -61,26 +49,22 @@ impl NumericArray {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Pixel {
-    pub x: Range,
-    pub y: Range,
-    pub z: Range,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Select {
+    #[default]
     All,
     Rt(Range),
-    Area(Pixel),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Query {
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScanQuery {
     pub mz: Range,
-    pub rt: Range,
+    pub select: Select,
+    pub ms_level: Option<u8>,
 }
 
+#[non_exhaustive]
 pub struct Window<'a> {
     pub index: usize,
     pub summary: &'a ScanSummary,
@@ -88,20 +72,10 @@ pub struct Window<'a> {
     pub intensity: &'a [f64],
 }
 
-fn position_in_range(value: u32, range: Range) -> bool {
-    let value = value as f64;
-    value >= range.from && value <= range.to
-}
-
 fn scan_is_selected(select: &Select, summary: &ScanSummary) -> bool {
     match select {
         Select::All => true,
         Select::Rt(range) => summary.rt >= range.from && summary.rt <= range.to,
-        Select::Area(pixel) => {
-            position_in_range(summary.position_x, pixel.x)
-                && position_in_range(summary.position_y, pixel.y)
-                && position_in_range(summary.position_z, pixel.z)
-        }
     }
 }
 
@@ -121,23 +95,25 @@ fn scan_summary_from_record(record: &SpectrumSummary) -> ScanSummary {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemKind {
+pub(crate) enum ItemKind {
     Spectrum,
     Chromatogram,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
-pub struct ItemSlice {
-    pub item_index: u64,
-    pub array_address_index: u64,
-    pub intensity_address_index: u64,
+pub(crate) struct ItemSlice {
+    pub(crate) item_index: u64,
+    pub(crate) array_address_index: u64,
+    pub(crate) intensity_address_index: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WindowRead {
     pub(crate) mz_address: ArrayAddress,
-    pub(crate) intensity_address: ArrayAddress,
+    pub(crate) y_address: ArrayAddress,
 }
 
 fn empty_array(dtype: u8) -> NumericArray {
@@ -149,14 +125,6 @@ fn empty_array(dtype: u8) -> NumericArray {
         FILE_DTYPE_I64 => NumericArray::I64(Vec::new()),
         _ => NumericArray::F64(Vec::new()),
     }
-}
-
-fn group_dtype(group: &ArrayGroup) -> u8 {
-    group
-        .refs
-        .first()
-        .map(|array_address| array_address.dtype)
-        .unwrap_or(FILE_DTYPE_F64)
 }
 
 fn value_at(array: &NumericArray, index: usize) -> f64 {
@@ -219,8 +187,15 @@ fn range_in_sorted(x: &NumericArray, low: f64, high: f64, paired: usize) -> (usi
     )
 }
 
-fn is_sorted(x: &NumericArray, len: usize) -> bool {
-    (1..len).all(|index| value_at(x, index - 1) <= value_at(x, index))
+fn array_run(addresses: &[ArrayAddress], kind: u32) -> Option<(usize, &[ArrayAddress])> {
+    let start = addresses.iter().position(|address| {
+        address.array_type == kind && address.continues_previous_segment == 0
+    })?;
+    let length = addresses[start + 1..]
+        .iter()
+        .take_while(|address| address.continues_previous_segment == 1)
+        .count();
+    Some((start, &addresses[start..=start + length]))
 }
 
 pub(crate) fn keep_pairs_sorted(
@@ -237,44 +212,44 @@ pub(crate) fn keep_pairs_sorted(
     append_range(y_out, y, start, end);
 }
 
-pub(crate) fn keep_pairs(
-    x: &NumericArray,
-    y: &NumericArray,
-    low: f64,
-    high: f64,
-    x_out: &mut NumericArray,
-    y_out: &mut NumericArray,
-) {
-    let paired = x.len().min(y.len());
-    if is_sorted(x, paired) {
-        keep_pairs_sorted(x, y, low, high, x_out, y_out);
-        return;
-    }
-    for index in 0..paired {
-        let value = value_at(x, index);
-        if value >= low && value <= high {
-            append_range(x_out, x, index, index + 1);
-            append_range(y_out, y, index, index + 1);
-        }
-    }
-}
-
 impl IonReader {
-    pub fn read_spectrum_window(
-        &mut self,
-        index: usize,
-        x_array_accession: impl Into<u32>,
-        y_array_accession: impl Into<u32>,
-        low: f64,
-        high: f64,
-    ) -> IonResult<DataXY> {
-        let x_array_accession = x_array_accession.into();
-        let y_array_accession = y_array_accession.into();
-        self.read_spectrum_window_inner(index, x_array_accession, y_array_accession, low, high)
-    }
-
     pub fn require_bounds(&mut self) -> IonResult<()> {
         self.ensure_spec_window_directory()
+    }
+
+    fn check_window(&self, index: usize, range: Range) -> IonResult<()> {
+        if !range.from.is_finite() || !range.to.is_finite() {
+            return Err("window bounds must be finite".into());
+        }
+        if range.from > range.to {
+            return Err("window: from is greater than to".into());
+        }
+        if index >= self.header.spectrum_count as usize {
+            return Err("spectrum index out of range".into());
+        }
+        Ok(())
+    }
+
+    fn window_rows(&mut self, index: usize, mz: Range) -> IonResult<Vec<WindowEntry>> {
+        self.require_bounds()?;
+
+        let width = self.header.target_mz_window as f64;
+        let window_directory = match &self.spec_window_directory {
+            WindowDirectoryCache::Loaded(index) => index,
+            _ => return Err(IonError::MissingSpectrumBounds),
+        };
+        let Some((window_low, window_high)) =
+            window_span(width, mz.from, mz.to, window_directory.window_count())
+        else {
+            return Ok(Vec::new());
+        };
+        let mut rows = Vec::new();
+        for window in window_low..=window_high {
+            if let Some(row) = window_directory.find_in_window(window, index as u32) {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
     }
 
     pub(crate) fn get_spectrum_mz_windows(
@@ -283,43 +258,25 @@ impl IonReader {
         mz_from: f64,
         mz_to: f64,
     ) -> IonResult<Vec<WindowRead>> {
-        if !mz_from.is_finite() || !mz_to.is_finite() {
-            return Err("mz window bounds must be finite".into());
-        }
-        if mz_from > mz_to {
-            return Err("mz window: from is greater than to".into());
-        }
-        if scan_index >= self.header.spectrum_count as usize {
-            return Err("spectrum index out of range".into());
-        }
-
-        self.require_bounds()?;
-
-        let width = self.header.target_mz_window as f64;
-        let rows = {
-            let window_directory = match &self.spec_window_directory {
-                WindowDirectoryCache::Loaded(index) => index,
-                _ => return Err(IonError::MissingSpectrumBounds),
-            };
-            let Some((window_low, window_high)) =
-                window_span(width, mz_from, mz_to, window_directory.window_count())
-            else {
-                return Ok(Vec::new());
-            };
-            let mut rows = Vec::new();
-            for window in window_low..=window_high {
-                if let Some(row) = window_directory.find_in_window(window, scan_index as u32) {
-                    rows.push(row);
-                }
-            }
-            rows
+        let mz = Range {
+            from: mz_from,
+            to: mz_to,
         };
+        self.check_window(scan_index, mz)?;
+        let rows = self.window_rows(scan_index, mz)?;
+        self.window_reads(&rows, |row| row.intensity_address)
+    }
 
+    fn window_reads(
+        &self,
+        rows: &[WindowEntry],
+        y_address: impl Fn(&WindowEntry) -> u32,
+    ) -> IonResult<Vec<WindowRead>> {
         let mut windows = Vec::with_capacity(rows.len());
         for row in rows {
             windows.push(WindowRead {
                 mz_address: self.array_address_at(row.mz_address)?,
-                intensity_address: self.array_address_at(row.intensity_address)?,
+                y_address: self.array_address_at(y_address(row))?,
             });
         }
         Ok(windows)
@@ -397,7 +354,7 @@ impl IonReader {
         for block_id in block_ids {
             ranges.push(self.spec_block_byte_range(block_id)?);
         }
-        coalesce_byte_ranges(&mut ranges, gap);
+        merge_ranges(&mut ranges, gap);
         Ok(ranges)
     }
 
@@ -407,7 +364,7 @@ impl IonReader {
         let mut block_ids = Vec::with_capacity(windows.len() * 2);
         for window in &windows {
             block_ids.push(window.mz_address.block_id);
-            block_ids.push(window.intensity_address.block_id);
+            block_ids.push(window.y_address.block_id);
         }
         block_ids.sort_unstable();
         block_ids.dedup();
@@ -420,44 +377,129 @@ impl IonReader {
         Ok(ranges)
     }
 
-    pub fn read_window(&mut self, index: usize, mz: Range) -> IonResult<DataXY> {
-        let windows = self.get_spectrum_mz_windows(index, mz.from, mz.to)?;
+    pub fn spectrum_window(
+        &mut self,
+        index: usize,
+        x_kind: impl Into<u32>,
+        y_kind: impl Into<u32>,
+        range: Range,
+    ) -> IonResult<DataXY> {
+        let (x_kind, y_kind) = (x_kind.into(), y_kind.into());
+        self.check_window(index, range)?;
+        if x_kind != MZ_ARRAY {
+            return self.filtered_window(index, x_kind, y_kind, range);
+        }
+        if y_kind == ACC_INT {
+            return self.mz_window(index, range, |row| row.intensity_address);
+        }
+        match self.y_shift(index, y_kind) {
+            Some(shift) => self.mz_window(index, range, |row| {
+                row.mz_address.wrapping_add_signed(shift)
+            }),
+            None => self.filtered_window(index, x_kind, y_kind, range),
+        }
+    }
 
-        let mz_dtype = windows
+    fn mz_window(
+        &mut self,
+        index: usize,
+        mz: Range,
+        y_address: impl Fn(&WindowEntry) -> u32,
+    ) -> IonResult<DataXY> {
+        let rows = self.window_rows(index, mz)?;
+        let windows = self.window_reads(&rows, y_address)?;
+        let (mz_dtype, y_dtype) = windows
             .first()
-            .map(|s| s.mz_address.dtype)
-            .unwrap_or(FILE_DTYPE_F64);
-        let intensity_dtype = windows
-            .first()
-            .map(|s| s.intensity_address.dtype)
-            .unwrap_or(FILE_DTYPE_F64);
+            .map(|window| (window.mz_address.dtype, window.y_address.dtype))
+            .unwrap_or((FILE_DTYPE_F64, FILE_DTYPE_F64));
         let mut mz_out = empty_array(mz_dtype);
-        let mut intensity_out = empty_array(intensity_dtype);
+        let mut y_out = empty_array(y_dtype);
         for window in windows {
             let mz_segment = self.read_spectrum_array(&window.mz_address)?;
-            let intensity_segment = self.read_spectrum_array(&window.intensity_address)?;
+            let y_segment = self.read_spectrum_array(&window.y_address)?;
             keep_pairs_sorted(
                 &mz_segment,
-                &intensity_segment,
+                &y_segment,
                 mz.from,
                 mz.to,
                 &mut mz_out,
-                &mut intensity_out,
+                &mut y_out,
             );
         }
 
         Ok(DataXY {
             x: mz_out,
-            y: intensity_out,
+            y: y_out,
         })
+    }
+
+    fn y_shift(&self, index: usize, y_kind: u32) -> Option<i32> {
+        let addresses = read_array_addresses_from_buffers(
+            &self.spec_entries_buf,
+            &self.spec_array_addresses,
+            index,
+        )?;
+        let addresses = addresses.as_slice();
+        let (mz_start, mz_run) = array_run(addresses, MZ_ARRAY)?;
+        array_run(addresses, ACC_INT)?;
+        let (y_start, y_run) = array_run(addresses, y_kind)?;
+        let same_split = mz_run
+            .iter()
+            .map(|address| address.element_count)
+            .eq(y_run.iter().map(|address| address.element_count));
+        same_split.then(|| y_start as i32 - mz_start as i32)
+    }
+
+    fn filtered_window(
+        &mut self,
+        index: usize,
+        x_kind: u32,
+        y_kind: u32,
+        range: Range,
+    ) -> IonResult<DataXY> {
+        let groups = match read_array_addresses_from_buffers(
+            &self.spec_entries_buf,
+            &self.spec_array_addresses,
+            index,
+        ) {
+            Some(addresses) => group_arrays(addresses.as_slice())?,
+            None => Vec::new(),
+        };
+        let x_group = groups.iter().find(|group| group.array_type == x_kind);
+        let y_group = groups.iter().find(|group| group.array_type == y_kind);
+        let (Some(x_group), Some(y_group)) = (x_group, y_group) else {
+            return Ok(DataXY {
+                x: empty_array(FILE_DTYPE_F64),
+                y: empty_array(FILE_DTYPE_F64),
+            });
+        };
+        let x = self.read_spectrum_group(x_group)?;
+        let y = self.read_spectrum_group(y_group)?;
+        let mut x_out = empty_array(x_group.dtype);
+        let mut y_out = empty_array(y_group.dtype);
+        for position in 0..x.len().min(y.len()) {
+            let value = value_at(&x, position);
+            if value >= range.from && value <= range.to {
+                append_range(&mut x_out, &x, position, position + 1);
+                append_range(&mut y_out, &y, position, position + 1);
+            }
+        }
+        Ok(DataXY { x: x_out, y: y_out })
+    }
+
+    fn read_spectrum_group(&mut self, group: &ArrayGroup) -> IonResult<NumericArray> {
+        let mut values = empty_array(group.dtype);
+        for address in &group.refs {
+            let segment = self.read_spectrum_array(address)?;
+            append_range(&mut values, &segment, 0, segment.len());
+        }
+        Ok(values)
     }
 
     pub fn scans_in(
         &mut self,
-        mz: Range,
-        select: Select,
-        ms_level: Option<u8>,
-        visit: &mut dyn FnMut(&Window),
+        query: &ScanQuery,
+        mut visit: impl FnMut(&Window),
     ) -> IonResult<()> {
         self.require_bounds()?;
         let count = self.header.spectrum_count as usize;
@@ -467,13 +509,13 @@ impl IonReader {
             let Some(record) = self.spectrum_summary(index) else {
                 continue;
             };
-            if let Some(level) = ms_level
+            if let Some(level) = query.ms_level
                 && record.ms_level != level
             {
                 continue;
             }
             let summary = scan_summary_from_record(&record);
-            if !scan_is_selected(&select, &summary) {
+            if !scan_is_selected(&query.select, &summary) {
                 continue;
             }
             let Some(refs) = self.spectrum_array_addresses(index) else {
@@ -486,7 +528,8 @@ impl IonReader {
             if !has_mz || !has_intensity {
                 continue;
             }
-            let data = self.read_window(index, mz)?;
+            let data =
+                self.spectrum_window(index, ArrayKind::Mz, ArrayKind::Intensity, query.mz)?;
             mz_out.clear();
             data.x.extend_f64(&mut mz_out);
             intensity_out.clear();
@@ -502,82 +545,8 @@ impl IonReader {
         Ok(())
     }
 
-    pub(crate) fn read_spectrum_window_inner(
-        &mut self,
-        index: usize,
-        x_array_accession: u32,
-        y_array_accession: u32,
-        low: f64,
-        high: f64,
-    ) -> IonResult<DataXY> {
-        if index >= self.header.spectrum_count as usize {
-            return Err("spectrum index out of range".into());
-        }
-        if low > high {
-            return Ok(DataXY::empty());
-        }
-        if x_array_accession == ACC_MZ && y_array_accession == ACC_INT {
-            return self.read_window(
-                index,
-                Range {
-                    from: low,
-                    to: high,
-                },
-            );
-        }
-
-        let Some(array_addresses) = read_array_addresses_from_buffers(
-            &self.spec_entries_buf,
-            &self.spec_array_addresses,
-            index,
-        ) else {
-            return Ok(DataXY::empty());
-        };
-        let groups = group_arrays(array_addresses.as_slice())?;
-
-        let mut x_group = None;
-        let mut y_group = None;
-        for group in &groups {
-            if group.array_type == x_array_accession && x_group.is_none() {
-                x_group = Some(group);
-            } else if group.array_type == y_array_accession && y_group.is_none() {
-                y_group = Some(group);
-            }
-        }
-
-        let (Some(x_group), Some(y_group)) = (x_group, y_group) else {
-            return Ok(DataXY::empty());
-        };
-
-        self.read_full_window(x_group, y_group, low, high)
-    }
-
-    pub(crate) fn read_full_window(
-        &mut self,
-        x_group: &ArrayGroup,
-        y_group: &ArrayGroup,
-        low: f64,
-        high: f64,
-    ) -> IonResult<DataXY> {
-        let x = self.read_group_typed(x_group)?;
-        let y = self.read_group_typed(y_group)?;
-
-        let mut x_out = empty_array(group_dtype(x_group));
-        let mut y_out = empty_array(group_dtype(y_group));
-        keep_pairs(&x, &y, low, high, &mut x_out, &mut y_out);
-        Ok(DataXY { x: x_out, y: y_out })
-    }
-
-    fn read_group_typed(&mut self, group: &ArrayGroup) -> IonResult<NumericArray> {
-        let mut out = empty_array(group_dtype(group));
-        for array_address in &group.refs {
-            let window = self.read_spectrum_array(array_address)?;
-            append_range(&mut out, &window, 0, window.len());
-        }
-        Ok(out)
-    }
-
-    pub fn candidate_items(
+    #[cfg(test)]
+    pub(crate) fn candidate_items(
         &mut self,
         target: ItemKind,
         axis_accession: u32,

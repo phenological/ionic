@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cosmoz::{CompressOptions, Encoder, compress_into, max_compressed_size};
+use cosmoz::{CompressOptions, Encoder};
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
 use rayon::prelude::*;
 
@@ -53,7 +53,7 @@ pub(crate) trait BlockCompressor {
 
 pub(crate) struct DefaultCompressor {
     level: u8,
-    encoder: Box<Encoder>,
+    encoder: Encoder,
 }
 
 impl DefaultCompressor {
@@ -62,7 +62,6 @@ impl DefaultCompressor {
         let options = CompressOptions {
             level,
             checksum: false,
-            ..Default::default()
         };
         let encoder = Encoder::new(&options)
             .map_err(|err| IonError::from(format!("zstd start error: {err:?}")))?;
@@ -72,14 +71,11 @@ impl DefaultCompressor {
 
 impl BlockCompressor for DefaultCompressor {
     fn compress(&mut self, input: &[u8], output: &mut Vec<u8>) -> IonResult<usize> {
-        let options = CompressOptions {
-            level: self.level,
-            checksum: false,
-            ..Default::default()
-        };
         output.clear();
-        output.resize(max_compressed_size(input.len(), &options), 0);
-        let written = compress_into(input, output, &options, &mut self.encoder)
+        output.resize(self.encoder.max_compressed_size(input.len()), 0);
+        let written = self
+            .encoder
+            .compress_into(input, output)
             .map_err(|err| IonError::from(format!("zstd encode failed: {err:?}")))?;
         output.truncate(written);
         Ok(written)
@@ -367,8 +363,7 @@ pub(crate) struct ContainerSummary {
     pub(crate) directory_crc32: u32,
 }
 
-pub(crate) struct BlockWriter<'output, C: BlockCompressor> {
-    output: &'output mut dyn WriteBytes,
+pub(crate) struct BlockWriter<C: BlockCompressor> {
     block_packing_id: PackingId,
     store: BlockStore,
     pending: Vec<PendingBlock>,
@@ -381,15 +376,13 @@ pub(crate) struct BlockWriter<'output, C: BlockCompressor> {
     staging: Option<Staging>,
 }
 
-impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
+impl<C: BlockCompressor + Send + Sync> BlockWriter<C> {
     pub(crate) fn new(
-        output: &'output mut dyn WriteBytes,
         max_block_uncompressed_size: usize,
         compressor: CompressionMode<C>,
         block_packing_id: PackingId,
     ) -> Self {
         Self {
-            output,
             block_packing_id,
             store: BlockStore::new(max_block_uncompressed_size),
             pending: Vec::new(),
@@ -401,6 +394,11 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
             #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
             staging: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_bytes(&self) -> usize {
+        self.pending_bytes
     }
 
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
@@ -419,6 +417,7 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
 
     pub(crate) fn add_item_to_box<WriteAction>(
         &mut self,
+        output: &mut dyn WriteBytes,
         array_type: u32,
         item_byte_size: usize,
         element_size: usize,
@@ -427,11 +426,12 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
     where
         WriteAction: FnOnce(&mut Vec<u8>) -> IonResult<()>,
     {
-        self.add_item_to_window(array_type, 0, item_byte_size, element_size, write_action)
+        self.add_item_to_window(output, array_type, 0, item_byte_size, element_size, write_action)
     }
 
     pub(crate) fn add_item_to_window<WriteAction>(
         &mut self,
+        output: &mut dyn WriteBytes,
         array_type: u32,
         window_index: u32,
         item_byte_size: usize,
@@ -443,14 +443,15 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
     {
         let group = BlockGroup::new(array_type, element_size, window_index);
         if item_byte_size > self.store.max_block_size {
-            self.add_isolated_block(group, item_byte_size, true, write_action)
+            self.add_isolated_block(output, group, item_byte_size, true, write_action)
         } else {
-            self.add_normal_item(group, item_byte_size, write_action)
+            self.add_normal_item(output, group, item_byte_size, write_action)
         }
     }
 
     fn add_isolated_block<WriteAction>(
         &mut self,
+        output: &mut dyn WriteBytes,
         group: BlockGroup,
         item_byte_size: usize,
         compress_sequentially: bool,
@@ -459,7 +460,7 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
     where
         WriteAction: FnOnce(&mut Vec<u8>) -> IonResult<()>,
     {
-        self.seal_open_block_for_group(group)?;
+        self.seal_open_block_for_group(output, group)?;
 
         let block_id =
             self.store
@@ -474,12 +475,13 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
                 .accumulated_data,
         )?;
 
-        self.seal_open_block_for_group(group)?;
+        self.seal_open_block_for_group(output, group)?;
         Ok((block_id, 0))
     }
 
     fn add_normal_item<WriteAction>(
         &mut self,
+        output: &mut dyn WriteBytes,
         group: BlockGroup,
         item_byte_size: usize,
         write_action: WriteAction,
@@ -488,7 +490,7 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
         WriteAction: FnOnce(&mut Vec<u8>) -> IonResult<()>,
     {
         if self.store.would_overflow(group, item_byte_size) {
-            self.seal_open_block_for_group(group)?;
+            self.seal_open_block_for_group(output, group)?;
         }
 
         self.store.ensure_open_block(group, item_byte_size)?;
@@ -499,7 +501,11 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
         Ok((block_id, element_offset))
     }
 
-    fn seal_open_block_for_group(&mut self, group: BlockGroup) -> IonResult<()> {
+    fn seal_open_block_for_group(
+        &mut self,
+        output: &mut dyn WriteBytes,
+        group: BlockGroup,
+    ) -> IonResult<()> {
         let Some(active_block) = self.store.take_open_block(group) else {
             return Ok(());
         };
@@ -516,7 +522,7 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
         });
         self.pending_bytes += data_len;
         if self.pending_bytes >= self.max_pending_bytes {
-            self.flush_pending()?;
+            self.flush_pending(output)?;
         }
         Ok(())
     }
@@ -611,11 +617,11 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
     }
 
     #[cfg(test)]
-    fn set_max_pending_bytes(&mut self, value: usize) {
+    pub(crate) fn set_max_pending_bytes(&mut self, value: usize) {
         self.max_pending_bytes = value;
     }
 
-    fn flush_pending(&mut self) -> IonResult<()> {
+    fn flush_pending(&mut self, output: &mut dyn WriteBytes) -> IonResult<()> {
         if self.pending.is_empty() {
             return Ok(());
         }
@@ -659,7 +665,7 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
         }
 
         for block in ready {
-            self.output.write(&block.bytes)?;
+            output.write(&block.bytes)?;
             self.store.seal(
                 block.block_id,
                 BlockDirEntry {
@@ -667,7 +673,6 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
                     payload_size: block.bytes.len() as u64,
                     uncompressed_len_bytes: block.raw_len,
                     checksum: block.checksum,
-                    ..Default::default()
                 },
             )?;
             self.payload_bytes += block.bytes.len() as u64;
@@ -676,7 +681,7 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
     }
 
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-    fn write_staged_blocks_in_window_order(&mut self) -> IonResult<()> {
+    fn write_staged_blocks_in_window_order(&mut self, output: &mut dyn WriteBytes) -> IonResult<()> {
         let Some(mut staging) = self.staging.take() else {
             return Ok(());
         };
@@ -688,7 +693,7 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
         for key in staging.keys {
             buffer.resize(key.staged_len as usize, 0);
             staging.spill.read_at(key.staged_offset, &mut buffer)?;
-            self.output.write(&buffer)?;
+            output.write(&buffer)?;
             self.store.seal(
                 key.block_id,
                 BlockDirEntry {
@@ -703,20 +708,20 @@ impl<'output, C: BlockCompressor + Send + Sync> BlockWriter<'output, C> {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> IonResult<ContainerSummary> {
+    pub(crate) fn finish(&mut self, output: &mut dyn WriteBytes) -> IonResult<ContainerSummary> {
         for group in self.store.open_blocks.open_groups_in_id_order() {
-            self.seal_open_block_for_group(group)?;
+            self.seal_open_block_for_group(output, group)?;
         }
-        self.flush_pending()?;
+        self.flush_pending(output)?;
         #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-        self.write_staged_blocks_in_window_order()?;
+        self.write_staged_blocks_in_window_order(output)?;
 
         let block_count = self.store.block_count();
         let mut directory_bytes =
             Vec::with_capacity(block_count as usize * BLOCK_DIRECTORY_ENTRY_SIZE);
         self.store.write_directory(&mut directory_bytes);
         let directory_crc32 = crc32fast::hash(&directory_bytes);
-        self.output.write(&directory_bytes)?;
+        output.write(&directory_bytes)?;
 
         let total_bytes = self.payload_bytes + directory_bytes.len() as u64;
         Ok(ContainerSummary {
@@ -1025,7 +1030,6 @@ mod tests {
 
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             8,
             CompressionMode::Compressed(CountingCompressor {
                 forks: forks.clone(),
@@ -1037,14 +1041,14 @@ mod tests {
 
         for i in 0..block_count {
             builder
-                .add_item_to_box(1, 8, 4, |buf| {
+                .add_item_to_box(&mut output, 1, 8, 4, |buf| {
                     buf.extend_from_slice(&[(i % 256) as u8; 8]);
                     Ok(())
                 })
                 .unwrap();
         }
 
-        builder.finish().unwrap();
+        builder.finish(&mut output).unwrap();
 
         let fork_count = forks.load(Ordering::SeqCst);
         assert!(
@@ -1059,14 +1063,13 @@ mod tests {
     fn block_writer_raw_single_item() {
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             64 * 1024 * 1024,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         let item_data = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
         let (block_id, element_offset) = builder
-            .add_item_to_box(1, item_data.len(), 8, |buf| {
+            .add_item_to_box(&mut output, 1, item_data.len(), 8, |buf| {
                 buf.extend_from_slice(&item_data);
                 Ok(())
             })
@@ -1077,7 +1080,7 @@ mod tests {
             block_count,
             total_bytes,
             ..
-        } = builder.finish().unwrap();
+        } = builder.finish(&mut output).unwrap();
         assert_eq!(block_count, 1);
         assert!(total_bytes > 0);
         assert!(output.0.starts_with(&item_data));
@@ -1087,7 +1090,6 @@ mod tests {
     fn same_stride_different_array_types_get_different_blocks() {
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             64 * 1024 * 1024,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
@@ -1095,13 +1097,13 @@ mod tests {
         let mz_array_type = 1000514;
         let intensity_array_type = 1000515;
         let (mz_block, _) = builder
-            .add_item_to_box(mz_array_type, 8, 4, |buf| {
+            .add_item_to_box(&mut output, mz_array_type, 8, 4, |buf| {
                 buf.extend_from_slice(&[0u8; 8]);
                 Ok(())
             })
             .unwrap();
         let (intensity_block, _) = builder
-            .add_item_to_box(intensity_array_type, 8, 4, |buf| {
+            .add_item_to_box(&mut output, intensity_array_type, 8, 4, |buf| {
                 buf.extend_from_slice(&[0u8; 8]);
                 Ok(())
             })
@@ -1110,27 +1112,26 @@ mod tests {
             mz_block, intensity_block,
             "different array types must never share a block"
         );
-        assert_eq!(builder.finish().unwrap().block_count, 2);
+        assert_eq!(builder.finish(&mut output).unwrap().block_count, 2);
     }
 
     #[test]
     fn same_type_different_windows_get_different_blocks() {
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             64 * 1024 * 1024,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         let array_type = 1000514;
         let (window_0_block, _) = builder
-            .add_item_to_window(array_type, 0, 8, 4, |buf| {
+            .add_item_to_window(&mut output, array_type, 0, 8, 4, |buf| {
                 buf.extend_from_slice(&[0u8; 8]);
                 Ok(())
             })
             .unwrap();
         let (window_1_block, _) = builder
-            .add_item_to_window(array_type, 1, 8, 4, |buf| {
+            .add_item_to_window(&mut output, array_type, 1, 8, 4, |buf| {
                 buf.extend_from_slice(&[0u8; 8]);
                 Ok(())
             })
@@ -1139,7 +1140,7 @@ mod tests {
             window_0_block, window_1_block,
             "different windows must never share a block"
         );
-        let block_count = builder.finish().unwrap().block_count as usize;
+        let block_count = builder.finish(&mut output).unwrap().block_count as usize;
         assert_eq!(block_count, 2);
 
         let directory_start = output.0.len() - block_count * BLOCK_DIRECTORY_ENTRY_SIZE;
@@ -1163,13 +1164,12 @@ mod tests {
     fn oversized_item_uses_sequential_path() {
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             16,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         builder
-            .add_item_to_box(1, 64, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 64, 8, |buf| {
                 buf.extend_from_slice(&[2u8; 64]);
                 Ok(())
             })
@@ -1185,25 +1185,24 @@ mod tests {
     fn block_writer_element_offsets_are_correct() {
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             64 * 1024 * 1024,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         let (_, first_offset) = builder
-            .add_item_to_box(1, 8, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 8, 8, |buf| {
                 buf.extend_from_slice(&[0u8; 8]);
                 Ok(())
             })
             .unwrap();
         let (_, second_offset) = builder
-            .add_item_to_box(1, 8, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 8, 8, |buf| {
                 buf.extend_from_slice(&[0u8; 8]);
                 Ok(())
             })
             .unwrap();
         let (_, third_offset) = builder
-            .add_item_to_box(1, 8, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 8, 8, |buf| {
                 buf.extend_from_slice(&[0u8; 8]);
                 Ok(())
             })
@@ -1217,19 +1216,18 @@ mod tests {
     fn block_writer_different_strides_get_different_blocks() {
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             64 * 1024 * 1024,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         let (four_byte_block_id, _) = builder
-            .add_item_to_box(1, 4, 4, |buf| {
+            .add_item_to_box(&mut output, 1, 4, 4, |buf| {
                 buf.extend_from_slice(&[0u8; 4]);
                 Ok(())
             })
             .unwrap();
         let (eight_byte_block_id, _) = builder
-            .add_item_to_box(1, 8, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 8, 8, |buf| {
                 buf.extend_from_slice(&[0u8; 8]);
                 Ok(())
             })
@@ -1242,19 +1240,18 @@ mod tests {
         let max_block_size = 16usize;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             max_block_size,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         let (first_block_id, _) = builder
-            .add_item_to_box(1, 12, 4, |buf| {
+            .add_item_to_box(&mut output, 1, 12, 4, |buf| {
                 buf.extend_from_slice(&[0u8; 12]);
                 Ok(())
             })
             .unwrap();
         let (second_block_id, _) = builder
-            .add_item_to_box(1, 12, 4, |buf| {
+            .add_item_to_box(&mut output, 1, 12, 4, |buf| {
                 buf.extend_from_slice(&[0u8; 12]);
                 Ok(())
             })
@@ -1263,7 +1260,7 @@ mod tests {
             first_block_id, second_block_id,
             "overflow should have triggered a new block"
         );
-        let total_block_count = builder.finish().unwrap().block_count;
+        let total_block_count = builder.finish(&mut output).unwrap().block_count;
         assert_eq!(total_block_count, 2);
     }
 
@@ -1271,13 +1268,12 @@ mod tests {
     fn block_writer_finish_writes_directory() {
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             64 * 1024 * 1024,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         builder
-            .add_item_to_box(1, 8, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 8, 8, |buf| {
                 buf.extend_from_slice(&[0xAAu8; 8]);
                 Ok(())
             })
@@ -1286,7 +1282,7 @@ mod tests {
             block_count,
             total_bytes,
             ..
-        } = builder.finish().unwrap();
+        } = builder.finish(&mut output).unwrap();
         assert_eq!(block_count, 1);
         let expected_directory_size = BLOCK_DIRECTORY_ENTRY_SIZE as u64;
         assert_eq!(total_bytes, 8 + expected_directory_size);
@@ -1295,8 +1291,7 @@ mod tests {
     #[test]
     fn block_writer_empty_produces_no_blocks() {
         let mut output = VecOutput(Vec::new());
-        let builder = BlockWriter::new(
-            &mut output,
+        let mut builder = BlockWriter::new(
             64 * 1024 * 1024,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
@@ -1305,7 +1300,7 @@ mod tests {
             block_count,
             total_bytes,
             ..
-        } = builder.finish().unwrap();
+        } = builder.finish(&mut output).unwrap();
         assert_eq!(block_count, 0);
         assert_eq!(total_bytes, 0);
         assert!(output.0.is_empty());
@@ -1337,7 +1332,6 @@ mod tests {
         let window_count = 3u32;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             8,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
@@ -1348,7 +1342,7 @@ mod tests {
         for round in 0..rounds {
             for window in 0..window_count {
                 let (block_id, _) = builder
-                    .add_item_to_window(1000514, window, 8, 8, |buf| {
+                    .add_item_to_window(&mut output, 1000514, window, 8, 8, |buf| {
                         buf.extend_from_slice(&[round as u8; 8]);
                         Ok(())
                     })
@@ -1356,7 +1350,7 @@ mod tests {
                 window_of.insert(block_id, window);
             }
         }
-        let block_count = builder.finish().unwrap().block_count as usize;
+        let block_count = builder.finish(&mut output).unwrap().block_count as usize;
         let payload_order = blocks_in_payload_order(&output.0, block_count, &window_of);
 
         let mut sorted = payload_order.clone();
@@ -1382,7 +1376,6 @@ mod tests {
         let blocks_per_batch = 6usize;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             8,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
@@ -1393,7 +1386,7 @@ mod tests {
         for round in 0..rounds {
             for window in 0..window_count {
                 let (block_id, _) = builder
-                    .add_item_to_window(1000514, window, 8, 8, |buf| {
+                    .add_item_to_window(&mut output, 1000514, window, 8, 8, |buf| {
                         buf.extend_from_slice(&[round as u8; 8]);
                         Ok(())
                     })
@@ -1401,7 +1394,7 @@ mod tests {
                 window_of.insert(block_id, window);
             }
         }
-        let block_count = builder.finish().unwrap().block_count as usize;
+        let block_count = builder.finish(&mut output).unwrap().block_count as usize;
         let payload_order = blocks_in_payload_order(&output.0, block_count, &window_of);
 
         let batches: Vec<&[(u32, u32)]> = payload_order.chunks(blocks_per_batch).collect();
@@ -1437,7 +1430,6 @@ mod tests {
         let encode = |window_major: bool| -> (Vec<u8>, usize, std::collections::HashMap<u32, u32>) {
             let mut output = VecOutput(Vec::new());
             let builder = BlockWriter::new(
-                &mut output,
                 8,
                 CompressionMode::<PassthroughCompressor>::Raw,
                 PackingId::Raw,
@@ -1454,7 +1446,7 @@ mod tests {
                 for window in 0..window_count {
                     let content = [(round * window_count + window) as u8; 8];
                     let (block_id, _) = builder
-                        .add_item_to_window(1000514, window, 8, 8, |buf| {
+                        .add_item_to_window(&mut output, 1000514, window, 8, 8, |buf| {
                             buf.extend_from_slice(&content);
                             Ok(())
                         })
@@ -1462,7 +1454,7 @@ mod tests {
                     window_of.insert(block_id, window);
                 }
             }
-            let block_count = builder.finish().unwrap().block_count as usize;
+            let block_count = builder.finish(&mut output).unwrap().block_count as usize;
             (output.0, block_count, window_of)
         };
 
@@ -1509,7 +1501,6 @@ mod tests {
         let window_count = 3u32;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             8,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
@@ -1524,7 +1515,7 @@ mod tests {
             for window in 0..window_count {
                 let content = [(round * window_count + window) as u8; 8];
                 let (block_id, _) = builder
-                    .add_item_to_window(1000514, window, 8, 8, |buf| {
+                    .add_item_to_window(&mut output, 1000514, window, 8, 8, |buf| {
                         buf.extend_from_slice(&content);
                         Ok(())
                     })
@@ -1533,7 +1524,7 @@ mod tests {
                 content_of.insert(block_id, content);
             }
         }
-        let block_count = builder.finish().unwrap().block_count as usize;
+        let block_count = builder.finish(&mut output).unwrap().block_count as usize;
         assert_eq!(block_count, (rounds * window_count) as usize);
 
         let raw = output.0;
@@ -1572,19 +1563,18 @@ mod tests {
         let max_block_size = 16usize;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             max_block_size,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         let (block_id, element_offset) = builder
-            .add_item_to_box(1, 64, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 64, 8, |buf| {
                 buf.extend_from_slice(&[0xABu8; 64]);
                 Ok(())
             })
             .unwrap();
         assert_eq!(element_offset, 0);
-        let block_count = builder.finish().unwrap().block_count;
+        let block_count = builder.finish(&mut output).unwrap().block_count;
         assert_eq!(block_count, 1);
         assert_eq!(block_id, 0);
         assert!(output.0.starts_with(&[0xABu8; 64]));
@@ -1595,25 +1585,24 @@ mod tests {
         let max_block_size = 16usize;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             max_block_size,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         let (bid_before, _) = builder
-            .add_item_to_box(1, 8, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 8, 8, |buf| {
                 buf.extend_from_slice(&[0x01u8; 8]);
                 Ok(())
             })
             .unwrap();
         let (bid_oversized, off_oversized) = builder
-            .add_item_to_box(1, 64, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 64, 8, |buf| {
                 buf.extend_from_slice(&[0x02u8; 64]);
                 Ok(())
             })
             .unwrap();
         let (bid_after, _) = builder
-            .add_item_to_box(1, 8, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 8, 8, |buf| {
                 buf.extend_from_slice(&[0x03u8; 8]);
                 Ok(())
             })
@@ -1621,7 +1610,7 @@ mod tests {
         assert_eq!(off_oversized, 0);
         assert_ne!(bid_before, bid_oversized);
         assert_ne!(bid_oversized, bid_after);
-        let block_count = builder.finish().unwrap().block_count;
+        let block_count = builder.finish(&mut output).unwrap().block_count;
         assert_eq!(block_count, 3);
     }
 
@@ -1630,19 +1619,18 @@ mod tests {
         let max_block_size = 16usize;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             max_block_size,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         let (bid_a, off_a) = builder
-            .add_item_to_box(1, 64, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 64, 8, |buf| {
                 buf.extend_from_slice(&[0x11u8; 64]);
                 Ok(())
             })
             .unwrap();
         let (bid_b, off_b) = builder
-            .add_item_to_box(1, 64, 8, |buf| {
+            .add_item_to_box(&mut output, 1, 64, 8, |buf| {
                 buf.extend_from_slice(&[0x22u8; 64]);
                 Ok(())
             })
@@ -1650,7 +1638,7 @@ mod tests {
         assert_eq!(off_a, 0);
         assert_eq!(off_b, 0);
         assert_ne!(bid_a, bid_b);
-        let block_count = builder.finish().unwrap().block_count;
+        let block_count = builder.finish(&mut output).unwrap().block_count;
         assert_eq!(block_count, 2);
     }
 
@@ -1660,18 +1648,17 @@ mod tests {
         let item_size = 128usize;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             max_block_size,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
         );
         builder
-            .add_item_to_box(1, item_size, 8, |buf| {
+            .add_item_to_box(&mut output, 1, item_size, 8, |buf| {
                 buf.extend_from_slice(&[0xFFu8; 128]);
                 Ok(())
             })
             .unwrap();
-        let block_count = builder.finish().unwrap().block_count;
+        let block_count = builder.finish(&mut output).unwrap().block_count;
         assert_eq!(block_count, 1);
         let directory_start = output.0.len() - BLOCK_DIRECTORY_ENTRY_SIZE;
         let uncomp_bytes = u64::from_le_bytes(
@@ -1686,7 +1673,6 @@ mod tests {
     fn block_writer_seq_and_par_match() {
         let mut seq_out = VecOutput(Vec::new());
         let mut seq = BlockWriter::new(
-            &mut seq_out,
             8,
             CompressionMode::Compressed(PassthroughCompressor),
             PackingId::ByteShuffle,
@@ -1695,42 +1681,41 @@ mod tests {
 
         let mut par_out = VecOutput(Vec::new());
         let mut par = BlockWriter::new(
-            &mut par_out,
             8,
             CompressionMode::Compressed(PassthroughCompressor),
             PackingId::ByteShuffle,
         );
         par.set_par_min_blocks(0);
 
-        for builder in [&mut seq, &mut par] {
+        for (builder, out) in [(&mut seq, &mut seq_out), (&mut par, &mut par_out)] {
             builder
-                .add_item_to_box(1, 8, 4, |buf| {
+                .add_item_to_box(out, 1, 8, 4, |buf| {
                     buf.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
                     Ok(())
                 })
                 .unwrap();
             builder
-                .add_item_to_box(1, 8, 4, |buf| {
+                .add_item_to_box(out, 1, 8, 4, |buf| {
                     buf.extend_from_slice(&[9, 10, 11, 12, 13, 14, 15, 16]);
                     Ok(())
                 })
                 .unwrap();
             builder
-                .add_item_to_box(1, 8, 4, |buf| {
+                .add_item_to_box(out, 1, 8, 4, |buf| {
                     buf.extend_from_slice(&[17, 18, 19, 20, 21, 22, 23, 24]);
                     Ok(())
                 })
                 .unwrap();
             builder
-                .add_item_to_box(1, 8, 4, |buf| {
+                .add_item_to_box(out, 1, 8, 4, |buf| {
                     buf.extend_from_slice(&[25, 26, 27, 28, 29, 30, 31, 32]);
                     Ok(())
                 })
                 .unwrap();
         }
 
-        let seq_res = seq.finish().unwrap();
-        let par_res = par.finish().unwrap();
+        let seq_res = seq.finish(&mut seq_out).unwrap();
+        let par_res = par.finish(&mut par_out).unwrap();
 
         assert_eq!(seq_res, par_res);
         assert_eq!(seq_out.0, par_out.0);
@@ -1741,7 +1726,6 @@ mod tests {
         let item_count = 7usize;
         let mut output = VecOutput(Vec::new());
         let mut builder = BlockWriter::new(
-            &mut output,
             8,
             CompressionMode::<PassthroughCompressor>::Raw,
             PackingId::Raw,
@@ -1750,13 +1734,13 @@ mod tests {
 
         for i in 0..item_count {
             builder
-                .add_item_to_box(1, 8, 8, |buf| {
+                .add_item_to_box(&mut output, 1, 8, 8, |buf| {
                     buf.extend_from_slice(&[i as u8; 8]);
                     Ok(())
                 })
                 .unwrap();
         }
-        let block_count = builder.finish().unwrap().block_count;
+        let block_count = builder.finish(&mut output).unwrap().block_count;
         assert_eq!(block_count as usize, item_count);
 
         let raw = output.0;

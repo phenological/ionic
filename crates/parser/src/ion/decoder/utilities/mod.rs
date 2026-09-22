@@ -1,5 +1,5 @@
 pub mod byte_source;
-pub(crate) use crate::ion::header::{Header, check_section_layout, parse_header};
+pub(crate) use crate::ion::header::{Header, check_section_layout};
 pub(crate) mod common;
 pub(crate) mod meta_column_layout;
 pub(crate) mod meta_group_reader;
@@ -17,9 +17,13 @@ pub(crate) use parse_precursor_list::parse_precursor_list;
 pub(crate) mod parse_product_list;
 pub(crate) use parse_product_list::parse_product_list;
 pub(crate) mod parse_spectrum_list;
-pub(crate) use parse_spectrum_list::{parse_spectrum, parse_spectrum_list};
+pub(crate) use parse_spectrum_list::{
+    parse_spectrum, parse_spectrum_list, parse_spectrum_list_header,
+};
 pub(crate) mod parse_chromatogram_list;
-pub(crate) use parse_chromatogram_list::{parse_chromatogram, parse_chromatogram_list};
+pub(crate) use parse_chromatogram_list::{
+    parse_chromatogram, parse_chromatogram_list, parse_chromatogram_list_header,
+};
 pub(crate) mod assign_attributes;
 #[cfg(test)]
 pub(crate) use assign_attributes::assign_attributes;

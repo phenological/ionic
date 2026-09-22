@@ -2,7 +2,8 @@ mod common;
 
 use common::{assertions::assert_mzml_semantic_eq, decode_ion, encode_to_ion, test_files};
 use ionic::{
-    ion::{HEADER_FORMAT_VERSION_OFFSET, IonReader, IonResult, MAX_SUPPORTED_VERSION, ReadOptions},
+    IonReader, IonResult, ReadOptions,
+    format::{HEADER_FORMAT_VERSION_OFFSET, MAX_SUPPORTED_VERSION},
     mzml::structs::MzML,
 };
 
@@ -43,7 +44,7 @@ fn decode_ion_without_checksum_verification(bytes: &[u8]) -> IonResult<MzML> {
         verify_checksums: false,
         ..ReadOptions::default()
     };
-    let mut decoder = IonReader::open(bytes, options)?;
+    let mut decoder = IonReader::from_bytes(bytes, &options)?;
     decoder.to_mzml()
 }
 
@@ -70,7 +71,7 @@ fn rejects_unsupported_format_version() {
 
 #[test]
 fn accepts_all_supported_format_versions() {
-    use ionic::ion::{MIN_SUPPORTED_VERSION, allow_version};
+    use ionic::format::{MIN_SUPPORTED_VERSION, allow_version};
     for version in MIN_SUPPORTED_VERSION..=MAX_SUPPORTED_VERSION {
         assert!(
             allow_version(version).is_ok(),
@@ -127,6 +128,24 @@ fn rejects_corrupted_global_meta() {
 }
 
 #[test]
+fn corrupt_spectrum_metadata_fails_on_read_not_on_open() {
+    let mut bytes = encode_to_ion(test_files::tiny_pwiz_11(), 0, false);
+    let off = read_header_u64(&bytes, 160) as usize;
+    let len = read_header_u64(&bytes, 168) as usize;
+    bytes[off + len / 4] ^= 0xFF;
+    let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default())
+        .expect("open must not read spectrum metadata");
+    let err = reader
+        .spectrum_metadata_at(0)
+        .map(|_| ())
+        .expect_err("first group read must fail");
+    assert!(
+        err.contains("group checksum mismatch"),
+        "unexpected decode error: {err}"
+    );
+}
+
+#[test]
 fn rejects_corrupted_trailer() {
     let mut bytes = encode_to_ion(test_files::tiny_pwiz_11(), 9, false);
     let last = bytes.len() - 1;
@@ -161,7 +180,7 @@ fn rejects_huge_spec_entry_count_with_checksums_off_4() {
     };
 
     bytes[off + 8..off + 16].copy_from_slice(&u64::MAX.to_le_bytes());
-    let err = IonReader::open(&bytes, config.clone())
+    let err = IonReader::from_bytes(&bytes, &config.clone())
         .map(|_| ())
         .expect_err("decode must reject a huge spec entry count without checksums");
     assert!(err.contains("overflow"), "unexpected decode error: {err}");
@@ -170,7 +189,7 @@ fn rejects_huge_spec_entry_count_with_checksums_off_4() {
     let wrapping_count = table_len / 32 + (1u64 << 59);
     bytes[off..off + 8].copy_from_slice(&0u64.to_le_bytes());
     bytes[off + 8..off + 16].copy_from_slice(&wrapping_count.to_le_bytes());
-    let err = IonReader::open(&bytes, config)
+    let err = IonReader::from_bytes(&bytes, &config)
         .map(|_| ())
         .expect_err("decode must reject a count whose product wraps to the table size");
     assert!(err.contains("overflow"), "unexpected decode error: {err}");

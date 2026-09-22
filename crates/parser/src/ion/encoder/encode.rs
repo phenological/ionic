@@ -17,7 +17,7 @@ use crate::{
                 ArrayPolicy, array_type_accession_from_binary_data_array,
                 array_type_cv_code_from_binary_data_array, parse_accession_tail_raw,
             },
-            output::SectionStorage,
+            output::{SectionStorage, WriteBytes},
         },
         filter_summary::{ChromatogramSummary, SpectrumSummary},
         packing::{Dtype, Packing, PackingId, PackingInput, packing_for, raw::RAW as RAW_PACKING},
@@ -26,7 +26,7 @@ use crate::{
     },
     mzml::structs::{BinaryDataArray, Chromatogram, CvParam, NumericArray, NumericType, Spectrum},
 };
-pub const TARGET_BLOCK_UNCOMPRESSED_BYTES: usize = 1024 * 1024;
+pub(crate) const TARGET_BLOCK_UNCOMPRESSED_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MZ_WINDOW: f64 = 20.0;
 pub(crate) const SPEC_SUMMARY_SIZE: usize = 80;
 pub(crate) const CHROM_SUMMARY_SIZE: usize = 80;
@@ -207,13 +207,7 @@ impl WriteOptions {
     }
 
     fn block_shuffle_is_enabled(self) -> bool {
-        if !self.compression_is_enabled() {
-            return false;
-        }
-        !matches!(
-            std::env::var("IONIC_BLOCK_SHUFFLE").as_deref(),
-            Ok("off") | Ok("raw") | Ok("0") | Ok("none")
-        )
+        self.compression_is_enabled()
     }
 
     pub(crate) fn array_filter_id(self) -> u8 {
@@ -247,20 +241,6 @@ impl WriteOptions {
             x_array_accession,
             y_array_accession: INTENSITY_ARRAY,
             force_f32: self.force_f32,
-        }
-    }
-
-    pub fn fast() -> Self {
-        Self {
-            compression_level: 3,
-            ..Default::default()
-        }
-    }
-
-    pub fn max_ratio() -> Self {
-        Self {
-            compression_level: 22,
-            ..Default::default()
         }
     }
 }
@@ -446,7 +426,6 @@ fn write_array_data(buf: &mut Vec<u8>, data: ArrayData<'_>, dtype: u8) {
         (FILE_DTYPE_I16, ArrayData::I16(e)) => write_i16_slice_le(buf, e),
         (FILE_DTYPE_I32, ArrayData::I32(e)) => write_i32_slice_le(buf, e),
         (FILE_DTYPE_I64, ArrayData::I64(e)) => write_i64_slice_le(buf, e),
-        // SAFETY: `validate_array_dtype` is always called before this function.
         _ => unreachable!("write_array_data called with unvalidated dtype/data combination"),
     }
 }
@@ -495,12 +474,13 @@ pub(crate) struct EncodedArrayAddress {
 }
 
 fn encode_variable_length_array(
+    output: &mut dyn WriteBytes,
     array_type: u32,
     data: ArrayData<'_>,
     dtype: u8,
     dtype_enum: Dtype,
     packing: &'static dyn Packing,
-    container: &mut BlockWriter<'_, DefaultCompressor>,
+    container: &mut BlockWriter<DefaultCompressor>,
 ) -> IonResult<(u32, u64, u32)> {
     let mut encoded = Vec::new();
     match packing.id() {
@@ -509,7 +489,7 @@ fn encode_variable_length_array(
     }
     let enc_len =
         u32::try_from(encoded.len()).map_err(|_| IonError::from("encoded array exceeds 4 GiB"))?;
-    let (bid, eoff) = container.add_item_to_box(array_type, encoded.len(), 1, |buf| {
+    let (bid, eoff) = container.add_item_to_box(output, array_type, encoded.len(), 1, |buf| {
         buf.extend_from_slice(&encoded);
         Ok(())
     })?;
@@ -532,16 +512,19 @@ fn write_fixed_array_payload(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_fixed_length_array(
+    output: &mut dyn WriteBytes,
     array_type: u32,
     data: ArrayData<'_>,
     dtype: u8,
     dtype_enum: Dtype,
     elem_bytes: usize,
     packing: &'static dyn Packing,
-    container: &mut BlockWriter<'_, DefaultCompressor>,
+    container: &mut BlockWriter<DefaultCompressor>,
 ) -> IonResult<(u32, u64, u32)> {
     let (bid, eoff) = container.add_item_to_box(
+        output,
         array_type,
         data.element_count() * elem_bytes,
         elem_bytes,
@@ -578,7 +561,7 @@ fn resolve_array_encoding<'a>(
     let elem_bytes = element_byte_size_for_dtype(dtype);
     let dtype_enum = Dtype::from_byte(dtype).unwrap_or(Dtype::F64);
     let requested: &'static dyn Packing = if config.compression_is_enabled() {
-        packing_for(accession, dtype_enum, data.element_count())
+        packing_for(accession, dtype_enum)
     } else {
         &RAW_PACKING
     };
@@ -599,10 +582,11 @@ fn resolve_array_encoding<'a>(
 }
 
 pub(crate) fn encode_single_array(
+    output: &mut dyn WriteBytes,
     bda: &BinaryDataArray,
     config: WriteOptions,
     policy: ArrayPolicy,
-    container: &mut BlockWriter<'_, DefaultCompressor>,
+    container: &mut BlockWriter<DefaultCompressor>,
 ) -> IonResult<Option<EncodedArrayAddress>> {
     let Some(encoding) = resolve_array_encoding(bda, config, policy)? else {
         return Ok(None);
@@ -617,10 +601,10 @@ pub(crate) fn encode_single_array(
         packing,
     } = encoding;
     let (block_id, element_offset, encoded_len) = if packing.is_variable_length() {
-        encode_variable_length_array(accession, data, dtype, dtype_enum, packing, container)?
+        encode_variable_length_array(output, accession, data, dtype, dtype_enum, packing, container)?
     } else {
         encode_fixed_length_array(
-            accession, data, dtype, dtype_enum, elem_bytes, packing, container,
+            output, accession, data, dtype, dtype_enum, elem_bytes, packing, container,
         )?
     };
     Ok(Some(EncodedArrayAddress {
@@ -741,11 +725,12 @@ pub(crate) fn window_ranges_for_item(
 }
 
 pub(crate) fn write_array_windows(
+    output: &mut dyn WriteBytes,
     bda: &BinaryDataArray,
     config: WriteOptions,
     policy: ArrayPolicy,
     windows: &[WindowRange],
-    container: &mut BlockWriter<'_, DefaultCompressor>,
+    container: &mut BlockWriter<DefaultCompressor>,
 ) -> IonResult<Vec<EncodedArrayAddress>> {
     let Some(encoding) = resolve_array_encoding(bda, config, policy)? else {
         return Ok(Vec::new());
@@ -769,6 +754,7 @@ pub(crate) fn write_array_windows(
         let segment_data = data.slice(window.start, window.end);
         let element_count = window.element_count();
         let (block_id, element_offset) = container.add_item_to_window(
+            output,
             accession,
             window.window_index,
             element_count * elem_bytes,
@@ -884,7 +870,7 @@ mod tests {
         let mut buf = Vec::new();
         write_mzml_to_ion(
             &mzml,
-            WriteOptions {
+            &WriteOptions {
                 compression_level: 0,
                 force_f32: false,
                 ..Default::default()
@@ -903,7 +889,7 @@ mod tests {
         let mut buf = Vec::new();
         write_mzml_to_ion(
             &mzml,
-            WriteOptions {
+            &WriteOptions {
                 compression_level: 0,
                 force_f32: false,
                 ..Default::default()
@@ -925,7 +911,7 @@ mod tests {
         let mut buf = Vec::new();
         write_mzml_to_ion(
             &mzml,
-            WriteOptions {
+            &WriteOptions {
                 compression_level: 0,
                 force_f32: false,
                 ..Default::default()
@@ -947,7 +933,7 @@ mod tests {
         let mut buf = Vec::new();
         write_mzml_to_ion(
             &mzml,
-            WriteOptions {
+            &WriteOptions {
                 compression_level: 0,
                 force_f32: false,
                 ..Default::default()
@@ -969,7 +955,7 @@ mod tests {
         let mut buf = Vec::new();
         write_mzml_to_ion(
             &mzml,
-            WriteOptions {
+            &WriteOptions {
                 compression_level: 0,
                 force_f32: false,
                 ..Default::default()
@@ -987,7 +973,7 @@ mod tests {
         let mut buf = Vec::new();
         write_mzml_to_ion(
             &mzml,
-            WriteOptions {
+            &WriteOptions {
                 compression_level: 0,
                 force_f32: false,
                 ..Default::default()

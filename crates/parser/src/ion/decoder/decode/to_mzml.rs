@@ -6,6 +6,7 @@ use rayon::prelude::*;
 use super::*;
 use crate::ion::decoder::utilities::byte_source::SourceBytes;
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetadatumValue {
     Number(f64),
@@ -13,15 +14,16 @@ pub enum MetadatumValue {
     Empty,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Metadatum {
-    pub(crate) item_index: u32,
-    pub(crate) id: u32,
-    pub(crate) parent_id: u32,
-    pub(crate) tag_id: TagId,
-    pub(crate) accession: Option<String>,
-    pub(crate) unit_accession: Option<String>,
-    pub(crate) value: MetadatumValue,
+    pub item_index: u32,
+    pub id: u32,
+    pub parent_id: u32,
+    pub tag_id: TagId,
+    pub accession: Option<String>,
+    pub unit_accession: Option<String>,
+    pub value: MetadatumValue,
 }
 
 pub(crate) struct MzmlConverter<'d> {
@@ -34,8 +36,8 @@ impl<'d> MzmlConverter<'d> {
         Self { decoder }
     }
 
-    pub(crate) fn metadata_only(decoder: &IonReader) -> IonResult<MzML> {
-        let global_meta = decoder.global_metadata()?;
+    fn run_level(decoder: &IonReader) -> IonResult<MzML> {
+        let global_meta = decoder.global_metadata_rows()?;
         let global_lookup = ChildrenLookup::new(&global_meta);
         let meta_refs: Vec<&Metadatum> = global_meta.iter().collect();
         let policy = DefaultMetadataPolicy;
@@ -55,10 +57,6 @@ impl<'d> MzmlConverter<'d> {
         let mut param_buffer: Vec<&Metadatum> = Vec::new();
         global_lookup.get_param_rows_into(&owner_rows, run_id, &policy, &mut param_buffer);
         let (cv_params, user_params) = parse_cv_and_user_params(&param_buffer);
-
-        let spectrum_list = assemble_spectrum_list(&decoder.spectrum_metadata_grouped()?, &policy);
-        let chromatogram_list =
-            assemble_chromatogram_list(&decoder.chromatogram_metadata_grouped()?, &policy);
 
         let source_file_ref_list = parse_run_source_file_refs(&owner_rows, &global_lookup, run_id);
 
@@ -97,14 +95,19 @@ impl<'d> MzmlConverter<'d> {
                 cv_params,
                 user_params,
                 source_file_ref_list,
-                spectrum_list,
-                chromatogram_list,
+                spectrum_list: None,
+                chromatogram_list: None,
             },
         })
     }
 
     pub(crate) fn full(&mut self) -> IonResult<MzML> {
-        let mut mzml = Self::metadata_only(self.decoder)?;
+        let mut mzml = Self::run_level(self.decoder)?;
+        let policy = DefaultMetadataPolicy;
+        mzml.run.spectrum_list =
+            assemble_spectrum_list(&self.decoder.spectrum_metadata_grouped()?, &policy);
+        mzml.run.chromatogram_list =
+            assemble_chromatogram_list(&self.decoder.chromatogram_metadata_grouped()?, &policy);
 
         if let Some(spectrum_list) = mzml.run.spectrum_list.as_mut() {
             attach_binaries(
@@ -113,7 +116,7 @@ impl<'d> MzmlConverter<'d> {
                 &mut spectrum_list.spectra,
                 &self.decoder.spec_container,
                 "spec",
-                self.decoder.parallel,
+                self.decoder.options.parallel,
             )?;
         }
 
@@ -127,7 +130,7 @@ impl<'d> MzmlConverter<'d> {
                 &mut chrom_list.chromatograms,
                 container,
                 "chrom",
-                self.decoder.parallel,
+                self.decoder.options.parallel,
             )?;
         }
 
@@ -154,10 +157,10 @@ fn assemble_spectrum_list(
             Some(existing) => existing.spectra.extend(list.spectra),
         }
     }
-    if let Some(list) = combined.as_mut() {
-        if list.count.is_none() {
-            list.count = Some(list.spectra.len());
-        }
+    if let Some(list) = combined.as_mut()
+        && list.count.is_none()
+    {
+        list.count = Some(list.spectra.len());
     }
     combined
 }
@@ -181,10 +184,10 @@ fn assemble_chromatogram_list(
             Some(existing) => existing.chromatograms.extend(list.chromatograms),
         }
     }
-    if let Some(list) = combined.as_mut() {
-        if list.count.is_none() {
-            list.count = Some(list.chromatograms.len());
-        }
+    if let Some(list) = combined.as_mut()
+        && list.count.is_none()
+    {
+        list.count = Some(list.chromatograms.len());
     }
     combined
 }
@@ -374,7 +377,7 @@ fn unfiltered_ref_bytes<'d>(
     unfilter_array_bytes(raw, group.dtype, group.array_filter)
 }
 
-pub(crate) fn attach_logical_array(
+fn attach_logical_array(
     binary_array_list: &mut BinaryDataArrayList,
     array_type: u32,
     array_cv_code: u8,
@@ -523,6 +526,19 @@ fn binary_array_has_type(binary_array: &BinaryDataArray, array_type: u32) -> boo
         .any(|param| parse_accession_tail(param.accession.as_deref()).raw() == array_type)
 }
 
+type ListHeader<'l, L> = Option<(L, &'l [u32])>;
+
+fn list_header<L>(
+    rows: &[Metadatum],
+    parse: for<'l> fn(&OwnerRows, &'l ChildrenLookup) -> ListHeader<'l, L>,
+) -> Option<L> {
+    let mut owner_rows = OwnerRows::with_capacity(rows.len());
+    for row in rows {
+        owner_rows.insert(row.id, row);
+    }
+    parse(&owner_rows, &ChildrenLookup::new(rows)).map(|(list, _)| list)
+}
+
 fn parse_run_source_file_refs(
     owner_rows: &OwnerRows,
     lookup: &ChildrenLookup,
@@ -566,8 +582,17 @@ fn parse_run_source_file_refs(
 }
 
 impl IonReader {
-    pub fn metadata(&self) -> IonResult<MzML> {
-        MzmlConverter::metadata_only(self)
+    pub fn global_metadata(&self) -> IonResult<MzML> {
+        let mut mzml = MzmlConverter::run_level(self)?;
+        mzml.run.spectrum_list = list_header(
+            &self.spec_meta.read_first_group()?,
+            parse_spectrum_list_header,
+        );
+        mzml.run.chromatogram_list = list_header(
+            &self.chrom_meta.read_first_group()?,
+            parse_chromatogram_list_header,
+        );
+        Ok(mzml)
     }
 
     pub fn to_mzml(&mut self) -> IonResult<MzML> {

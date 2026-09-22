@@ -1,3 +1,4 @@
+pub(crate) mod color;
 mod header;
 mod temp_output;
 

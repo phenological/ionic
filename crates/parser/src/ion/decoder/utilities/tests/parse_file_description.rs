@@ -6,11 +6,11 @@ use crate::ion::{
     DecompressionLimit,
     decoder::decode::Metadatum,
     utilities::{
+        Header,
         children_lookup::{ChildrenLookup, DefaultMetadataPolicy},
         meta_column_layout::MetaColumnLayout,
         parse_file_description::parse_file_description,
         parse_global_metadata::parse_global_metadata,
-        parse_header,
     },
 };
 
@@ -23,7 +23,7 @@ fn read_bytes(path: &str) -> Vec<u8> {
 
 fn parse_global_metadata_from_test_file() -> Vec<Metadatum> {
     let bytes = read_bytes(PATH);
-    let header = parse_header(&bytes).expect("parse_header failed");
+    let header = Header::parse(&bytes).expect("Header::parse failed");
 
     let start = header.off_global_meta as usize;
     let len = header.len_global_meta as usize;

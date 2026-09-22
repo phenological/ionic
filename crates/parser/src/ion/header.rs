@@ -1,10 +1,11 @@
 use crate::ion::{
-    IonResult,
+    ByteRange, IonResult,
     decoder::decode::INDEX_ENTRY_BYTES,
     encoder::encode::{CHROM_SUMMARY_SIZE, SPEC_SUMMARY_SIZE},
     format::{
         CODEC_ZSTD, CURRENT_VERSION, FILE_SIGNATURE, HEADER_SIZE, allow_compression, allow_version,
     },
+    meta_groups::{MetaSection, MetaTotals},
 };
 
 const BLOCK_DIRECTORY_ENTRY_SIZE_U64: u64 = 32;
@@ -124,12 +125,8 @@ const _: () = assert!(HEADER_CHROM_META_CRC32 == 1012);
 const _: () = assert!(HEADER_GLOBAL_META_CRC32 == 1016);
 const _: () = assert!(HEADER_CRC32 == 1020);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Header {
-    #[allow(dead_code)]
-    pub(crate) file_signature: [u8; 8],
-    #[allow(dead_code)]
-    pub(crate) endianness_flag: u8,
     pub(crate) format_version: u16,
     pub(crate) compression_codec: u8,
     pub(crate) compression_level: u8,
@@ -202,85 +199,6 @@ pub(crate) struct Header {
     pub(crate) header_crc32: u32,
 }
 
-impl Default for Header {
-    fn default() -> Self {
-        Self {
-            file_signature: [0u8; 8],
-            endianness_flag: 0,
-            format_version: 0,
-            compression_codec: 0,
-            compression_level: 0,
-            default_array_filter: 0,
-            target_block_uncompressed_bytes: 0,
-            off_spec_summary: 0,
-            len_spec_summary: 0,
-            off_chrom_summary: 0,
-            len_chrom_summary: 0,
-            off_spec_entries: 0,
-            len_spec_entries: 0,
-            off_spec_array_addresses: 0,
-            len_spec_array_addresses: 0,
-            off_chrom_entries: 0,
-            len_chrom_entries: 0,
-            off_chrom_array_addresses: 0,
-            len_chrom_array_addresses: 0,
-            off_spec_meta: 0,
-            len_spec_meta: 0,
-            off_chrom_meta: 0,
-            len_chrom_meta: 0,
-            off_global_meta: 0,
-            len_global_meta: 0,
-            off_spec_container: 0,
-            len_spec_container: 0,
-            off_chrom_container: 0,
-            len_chrom_container: 0,
-            spec_block_count: 0,
-            chrom_block_count: 0,
-            spectrum_count: 0,
-            chrom_count: 0,
-            spec_meta_count: 0,
-            spec_meta_numeric_count: 0,
-            spec_meta_string_count: 0,
-            chrom_meta_count: 0,
-            chrom_meta_numeric_count: 0,
-            chrom_meta_string_count: 0,
-            global_meta_count: 0,
-            global_meta_numeric_count: 0,
-            global_meta_string_count: 0,
-            spec_array_type_count: 0,
-            chrom_array_type_count: 0,
-            spec_meta_uncompressed_bytes: 0,
-            chrom_meta_uncompressed_bytes: 0,
-            global_meta_uncompressed_bytes: 0,
-            total_file_size: 0,
-            meta_group_size: 0,
-            spec_meta_group_count: 0,
-            chrom_meta_group_count: 0,
-            spec_summary_crc32: 0,
-            spec_entries_crc32: 0,
-            spec_array_addresses_crc32: 0,
-            chrom_summary_crc32: 0,
-            chrom_entries_crc32: 0,
-            chrom_array_addresses_crc32: 0,
-            target_mz_window: 0,
-            spec_directory_crc32: 0,
-            chrom_directory_crc32: 0,
-            off_spec_window_directory: 0,
-            len_spec_window_directory: 0,
-            off_chrom_window_directory: 0,
-            len_chrom_window_directory: 0,
-            plain_len_spec_window_directory: 0,
-            plain_len_chrom_window_directory: 0,
-            spec_window_directory_crc32: 0,
-            chrom_window_directory_crc32: 0,
-            spec_meta_crc32: 0,
-            chrom_meta_crc32: 0,
-            global_meta_crc32: 0,
-            header_crc32: 0,
-        }
-    }
-}
-
 impl Header {
     pub(crate) fn parse(bytes: &[u8]) -> IonResult<Self> {
         if bytes.len() < HEADER_SIZE {
@@ -289,16 +207,14 @@ impl Header {
 
         let h = &bytes[..HEADER_SIZE];
 
-        let file_signature = <[u8; 8]>::try_from(&h[0..8]).unwrap();
-        if file_signature != FILE_SIGNATURE {
+        if h[0..8] != FILE_SIGNATURE {
             return Err("header: invalid file signature".into());
         }
-        let endianness_flag = h[8];
-        if endianness_flag != 0 {
+        if h[8] != 0 {
             return Err("header: expected little-endian endianness_flag=0".into());
         }
 
-        let format_version = get_version_from_header(bytes).unwrap();
+        let format_version = version_of(bytes).unwrap();
         allow_version(format_version)?;
         let compression_codec = h[HEADER_CODEC_ID];
         let compression_level = h[HEADER_COMPRESSION_LEVEL];
@@ -401,8 +317,6 @@ impl Header {
         let header_crc32 = read_u32_at(h, HEADER_CRC32);
 
         let header = Header {
-            file_signature,
-            endianness_flag,
             format_version,
             compression_codec,
             compression_level,
@@ -485,6 +399,42 @@ impl Header {
         }
 
         Ok(header)
+    }
+
+    pub(crate) fn spec_meta_section(&self) -> MetaSection {
+        MetaSection {
+            range: ByteRange {
+                offset: self.off_spec_meta,
+                length: self.len_spec_meta,
+            },
+            group_count: self.spec_meta_group_count,
+            group_size: self.meta_group_size,
+            item_count: self.spectrum_count,
+            totals: MetaTotals {
+                rows: self.spec_meta_count,
+                numeric: self.spec_meta_numeric_count,
+                string: self.spec_meta_string_count,
+                uncompressed: self.spec_meta_uncompressed_bytes,
+            },
+        }
+    }
+
+    pub(crate) fn chrom_meta_section(&self) -> MetaSection {
+        MetaSection {
+            range: ByteRange {
+                offset: self.off_chrom_meta,
+                length: self.len_chrom_meta,
+            },
+            group_count: self.chrom_meta_group_count,
+            group_size: self.meta_group_size,
+            item_count: self.chrom_count,
+            totals: MetaTotals {
+                rows: self.chrom_meta_count,
+                numeric: self.chrom_meta_numeric_count,
+                string: self.chrom_meta_string_count,
+                uncompressed: self.chrom_meta_uncompressed_bytes,
+            },
+        }
     }
 
     pub(crate) fn write(&self, buf: &mut [u8]) {
@@ -696,12 +646,8 @@ impl Header {
     }
 }
 
-pub(crate) fn parse_header(bytes: &[u8]) -> IonResult<Header> {
-    Header::parse(bytes)
-}
-
 #[inline]
-pub fn get_version_from_header(bytes: &[u8]) -> Option<u16> {
+pub fn version_of(bytes: &[u8]) -> Option<u16> {
     let end = HEADER_FORMAT_VERSION_OFFSET + 2;
     if bytes.len() < end {
         return None;
@@ -711,7 +657,7 @@ pub fn get_version_from_header(bytes: &[u8]) -> Option<u16> {
     Some(u16::from_le_bytes(buf))
 }
 
-pub fn update_header_version(header: &mut [u8]) -> IonResult<bool> {
+pub fn set_version(header: &mut [u8]) -> IonResult<bool> {
     if header.len() < HEADER_SIZE {
         return Err(format!(
             "header: need {HEADER_SIZE} bytes to update the format version, got {}",
@@ -730,7 +676,7 @@ pub fn update_header_version(header: &mut [u8]) -> IonResult<bool> {
         )
         .into());
     }
-    let version = get_version_from_header(header).unwrap();
+    let version = version_of(header).unwrap();
     if version == CURRENT_VERSION {
         return Ok(false);
     }
@@ -739,17 +685,6 @@ pub fn update_header_version(header: &mut [u8]) -> IonResult<bool> {
     let new_crc = crc32fast::hash(&header[0..HEADER_CRC32]);
     write_u32_at(header, HEADER_CRC32, new_crc);
     Ok(true)
-}
-
-#[inline]
-pub fn get_total_file_size_from_header(bytes: &[u8]) -> Option<u64> {
-    let end = HEADER_TOTAL_FILE_SIZE + 8;
-    if bytes.len() < end {
-        return None;
-    }
-    let mut buf = [0u8; 8];
-    buf.copy_from_slice(&bytes[HEADER_TOTAL_FILE_SIZE..end]);
-    Some(u64::from_le_bytes(buf))
 }
 
 pub(crate) fn check_section_layout(h: &Header) -> Vec<String> {
@@ -1026,8 +961,6 @@ mod tests {
 
     fn header_bytes_with(build: impl FnOnce(&mut Header)) -> [u8; HEADER_SIZE] {
         let mut header = Header {
-            file_signature: FILE_SIGNATURE,
-            endianness_flag: 0,
             format_version: CURRENT_VERSION,
             ..Header::default()
         };
@@ -1062,7 +995,7 @@ mod tests {
     #[test]
     fn get_version_returns_none_on_short_buffer() {
         let too_short = [0u8; HEADER_FORMAT_VERSION_OFFSET + 1];
-        assert_eq!(get_version_from_header(&too_short), None);
+        assert_eq!(version_of(&too_short), None);
     }
 
     #[test]
@@ -1070,7 +1003,7 @@ mod tests {
         let mut bytes = [0u8; HEADER_SIZE];
         bytes[HEADER_FORMAT_VERSION_OFFSET..HEADER_FORMAT_VERSION_OFFSET + 2]
             .copy_from_slice(&CURRENT_VERSION.to_le_bytes());
-        assert_eq!(get_version_from_header(&bytes), Some(CURRENT_VERSION));
+        assert_eq!(version_of(&bytes), Some(CURRENT_VERSION));
     }
 
     #[test]
@@ -1078,13 +1011,13 @@ mod tests {
         let mut bytes = [0u8; HEADER_SIZE];
         bytes[HEADER_FORMAT_VERSION_OFFSET..HEADER_FORMAT_VERSION_OFFSET + 2]
             .copy_from_slice(&u16::MAX.to_le_bytes());
-        assert_eq!(get_version_from_header(&bytes), Some(u16::MAX));
+        assert_eq!(version_of(&bytes), Some(u16::MAX));
     }
 
     #[test]
     fn get_version_handles_exact_minimum_buffer_length() {
         let bytes = [0u8; HEADER_FORMAT_VERSION_OFFSET + 2];
-        assert_eq!(get_version_from_header(&bytes), Some(0));
+        assert_eq!(version_of(&bytes), Some(0));
     }
 
     #[test]
@@ -1167,8 +1100,6 @@ mod tests {
     #[test]
     fn write_then_parse_round_trips_every_field() {
         let mut original = Header {
-            file_signature: FILE_SIGNATURE,
-            endianness_flag: 0,
             format_version: CURRENT_VERSION,
             compression_codec: 1,
             compression_level: 3,
@@ -1249,8 +1180,6 @@ mod tests {
 
         let parsed = Header::parse(&buf).expect("round-trip parse failed");
 
-        assert_eq!(parsed.file_signature, original.file_signature);
-        assert_eq!(parsed.endianness_flag, original.endianness_flag);
         assert_eq!(parsed.format_version, original.format_version);
         assert_eq!(parsed.compression_codec, original.compression_codec);
         assert_eq!(parsed.compression_level, original.compression_level);
@@ -1493,8 +1422,8 @@ mod tests {
     #[test]
     fn update_rewrites_older_supported_version_to_current() {
         let mut buf = header_bytes_at_version(MIN_SUPPORTED_VERSION);
-        assert_eq!(update_header_version(&mut buf), Ok(true));
-        assert_eq!(get_version_from_header(&buf), Some(CURRENT_VERSION));
+        assert_eq!(set_version(&mut buf), Ok(true));
+        assert_eq!(version_of(&buf), Some(CURRENT_VERSION));
         assert_eq!(
             read_u32_at(&buf, HEADER_CRC32),
             crc32fast::hash(&buf[0..HEADER_CRC32])
@@ -1506,7 +1435,7 @@ mod tests {
     fn update_leaves_current_version_untouched() {
         let mut buf = header_bytes_at_version(CURRENT_VERSION);
         let before = buf;
-        assert_eq!(update_header_version(&mut buf), Ok(false));
+        assert_eq!(set_version(&mut buf), Ok(false));
         assert_eq!(buf, before);
     }
 
@@ -1515,7 +1444,7 @@ mod tests {
         let mut buf = header_bytes_at_version(MAX_SUPPORTED_VERSION + 1);
         let before = buf;
         assert_eq!(
-            update_header_version(&mut buf),
+            set_version(&mut buf),
             Err(IonError::UnsupportedFormatVersion(
                 MAX_SUPPORTED_VERSION + 1
             ))
@@ -1528,7 +1457,7 @@ mod tests {
         let mut buf = header_bytes_at_version(MIN_SUPPORTED_VERSION);
         buf[HEADER_CRC32] ^= 0xff;
         let before = buf;
-        let error = update_header_version(&mut buf).unwrap_err();
+        let error = set_version(&mut buf).unwrap_err();
         assert!(error.contains("header_crc32 mismatch"), "{error}");
         assert_eq!(buf, before);
     }
@@ -1537,9 +1466,9 @@ mod tests {
     fn update_rejects_bad_signature_and_short_buffer() {
         let mut buf = header_bytes_at_version(MIN_SUPPORTED_VERSION);
         buf[0] = b'X';
-        assert!(update_header_version(&mut buf).is_err());
+        assert!(set_version(&mut buf).is_err());
 
         let mut short = [0u8; HEADER_SIZE - 1];
-        assert!(update_header_version(&mut short).is_err());
+        assert!(set_version(&mut short).is_err());
     }
 }

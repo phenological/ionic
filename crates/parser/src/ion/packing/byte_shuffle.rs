@@ -22,7 +22,7 @@ impl Packing for ByteShuffle {
 
     fn decode(&self, input: &[u8], dtype: Dtype, out: &mut Vec<u8>) -> IonResult<()> {
         let stride = dtype.byte_stride();
-        if input.len() % stride != 0 {
+        if !input.len().is_multiple_of(stride) {
             return Err(IonError::from(
                 "byte shuffle: input length is not a multiple of the stride",
             ));
@@ -37,10 +37,6 @@ fn typed_to_le_bytes_and_stride(input: PackingInput<'_>) -> (Vec<u8>, usize) {
     match input {
         PackingInput::F64(s) => (s.iter().flat_map(|v| v.to_le_bytes()).collect(), 8),
         PackingInput::F32(s) => (s.iter().flat_map(|v| v.to_le_bytes()).collect(), 4),
-        PackingInput::I64(s) => (s.iter().flat_map(|v| v.to_le_bytes()).collect(), 8),
-        PackingInput::I32(s) => (s.iter().flat_map(|v| v.to_le_bytes()).collect(), 4),
-        PackingInput::I16(s) => (s.iter().flat_map(|v| v.to_le_bytes()).collect(), 2),
-        PackingInput::Bytes(b) => (b.to_vec(), 1),
     }
 }
 
@@ -55,8 +51,10 @@ mod tests {
             .unwrap();
         let mut dec = Vec::new();
         BYTE_SHUFFLE.decode(&enc, Dtype::F64, &mut dec).unwrap();
-        dec.chunks_exact(8)
-            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+        dec.as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_le_bytes(*c))
             .collect()
     }
 

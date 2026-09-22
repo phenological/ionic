@@ -2,17 +2,14 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::canonical_diff_paths;
+use common::{canonical_diff_paths, write_mzml_to_ion};
 use ionic::{
-    ion::{
-        IonReader, ReadOptions, SectionStorage, TARGET_BLOCK_UNCOMPRESSED_BYTES, WriteOptions,
-        write_mzml_to_ion,
-    },
+    IonReader, ReadOptions, SectionStorage, WriteOptions,
     mzml::parse_mzml::parse_mzml,
 };
 
 fn decode_ion_bytes(bytes: &[u8]) -> ionic::mzml::structs::MzML {
-    let mut ion = IonReader::open(bytes, ReadOptions::default()).unwrap();
+    let mut ion = IonReader::from_bytes(bytes, &ReadOptions::default()).unwrap();
     ion.to_mzml().unwrap()
 }
 
@@ -40,7 +37,7 @@ fn config_for_level(compression_level: u8) -> WriteOptions {
     WriteOptions {
         compression_level,
         force_f32: false,
-        block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
+        block_size: WriteOptions::default().block_size,
         parallel: false,
         section_storage: SectionStorage::Memory,
         mz_window: 0.0,

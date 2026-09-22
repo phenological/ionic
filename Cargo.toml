@@ -3,7 +3,7 @@ members = ["crates/parser", "crates/cli", "crates/xtask"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.3"
+version = "0.2.0"
 license = "MIT"
 authors = [
     "Javier Osorio M <javier.osorio.mosquera@gmail.com>",
@@ -11,7 +11,7 @@ authors = [
     "Jorge Osorio M <joheosmo@gmail.com>"
 ]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 repository = "https://github.com/phenological/ionic"
 homepage = "https://github.com/phenological/ionic"
 
@@ -22,8 +22,8 @@ once_cell = "1.21.4"
 quick-xml = "0.40.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
-clap = "4.6.1"
-cosmoz = { version = "0.1.1", features = ["std", "compression"] }
-regex = "1.12.4"
+clap = "4.6.7"
+cosmoz = { version = "0.2.0", features = ["std", "compression"] }
+regex = "1.13.1"
 rayon = "1.12.0"
 itoa = "1.0"

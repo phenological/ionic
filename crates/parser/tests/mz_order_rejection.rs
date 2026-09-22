@@ -1,16 +1,11 @@
 mod common;
 
-use std::sync::Arc;
-
 use ionic::{
-    BytesSource,
-    ion::{
-        IonReader, IonWriter, MemoryReader, Range, ReadOptions, SectionStorage,
-        TARGET_BLOCK_UNCOMPRESSED_BYTES, WriteOptions,
-    },
+    ArrayKind, IonReader, IonResult, IonWriter, Range, ReadOptions, ScanStream, SectionStorage,
+    WriteOptions,
     mzml::structs::{
-        BinaryDataArray, BinaryDataArrayList, CvParam, MzML, NumericArray, Run, Spectrum,
-        SpectrumList,
+        BinaryDataArray, BinaryDataArrayList, Chromatogram, CvParam, MzML, NumericArray, Run,
+        Spectrum, SpectrumList,
     },
 };
 
@@ -18,11 +13,70 @@ fn write_config() -> WriteOptions {
     WriteOptions {
         compression_level: 0,
         force_f32: false,
-        block_size: TARGET_BLOCK_UNCOMPRESSED_BYTES,
+        block_size: WriteOptions::default().block_size,
         parallel: false,
         section_storage: SectionStorage::Memory,
         mz_window: 0.0,
     }
+}
+
+struct OnceStream {
+    metadata: MzML,
+    spectra: std::vec::IntoIter<Spectrum>,
+    chromatograms: std::vec::IntoIter<Chromatogram>,
+}
+
+impl OnceStream {
+    fn new(mzml: MzML) -> Self {
+        let spectra = mzml
+            .run
+            .spectrum_list
+            .clone()
+            .map(|list| list.spectra)
+            .unwrap_or_default()
+            .into_iter();
+        let chromatograms = mzml
+            .run
+            .chromatogram_list
+            .clone()
+            .map(|list| list.chromatograms)
+            .unwrap_or_default()
+            .into_iter();
+        Self {
+            metadata: mzml,
+            spectra,
+            chromatograms,
+        }
+    }
+}
+
+impl ScanStream for OnceStream {
+    fn metadata(&mut self) -> IonResult<MzML> {
+        Ok(self.metadata.clone())
+    }
+
+    fn next_spectrum(&mut self) -> IonResult<Option<Spectrum>> {
+        Ok(self.spectra.next())
+    }
+
+    fn next_chromatogram(&mut self) -> IonResult<Option<Chromatogram>> {
+        Ok(self.chromatograms.next())
+    }
+}
+
+fn write_via_push(mzml: &MzML, options: &WriteOptions, output: &mut Vec<u8>) -> IonResult<()> {
+    let mut writer = IonWriter::to(output, &MzML::default(), options)?;
+    if let Some(list) = &mzml.run.spectrum_list {
+        for spectrum in &list.spectra {
+            writer.write_spectrum(spectrum)?;
+        }
+    }
+    if let Some(list) = &mzml.run.chromatogram_list {
+        for chromatogram in &list.chromatograms {
+            writer.write_chromatogram(chromatogram)?;
+        }
+    }
+    writer.finish()
 }
 
 fn mz_cv_param() -> CvParam {
@@ -101,9 +155,7 @@ fn write_mzml_rejects_unsorted_mz_spectrum() {
         vec![1.0, 2.0, 3.0],
     )]);
     let mut bytes = Vec::new();
-    let result = IonWriter::create(&mut bytes, write_config())
-        .expect("begin must succeed")
-        .write_mzml(&mzml);
+    let result = write_via_push(&mzml, &write_config(), &mut bytes);
     match result {
         Err(err) => {
             let msg = err.to_string();
@@ -127,9 +179,9 @@ fn write_stream_rejects_unsorted_mz_spectrum() {
         vec![100.0, 99.0, 101.0],
         vec![1.0, 2.0, 3.0],
     )]);
-    let mut reader = MemoryReader::new(mzml);
+    let mut reader = OnceStream::new(mzml);
     let mut bytes = Vec::new();
-    let result = IonWriter::create(&mut bytes, write_config())
+    let result = IonWriter::to(&mut bytes, &MzML::default(), &write_config())
         .expect("begin must succeed")
         .write_stream(&mut reader);
     match result {
@@ -155,9 +207,7 @@ fn write_mzml_rejects_second_spectrum_unsorted_names_correct_index() {
         spectrum_with_mz("scan=2", vec![100.0, 99.0, 101.0], vec![1.0, 2.0, 3.0]),
     ]);
     let mut bytes = Vec::new();
-    let result = IonWriter::create(&mut bytes, write_config())
-        .expect("begin must succeed")
-        .write_mzml(&mzml);
+    let result = write_via_push(&mzml, &write_config(), &mut bytes);
     match result {
         Err(err) => {
             let msg = err.to_string();
@@ -178,13 +228,9 @@ fn write_mzml_accepts_sorted_mz_spectrum_and_roundtrips() {
         vec![1.0, 2.0, 3.0],
     )]);
     let mut bytes = Vec::new();
-    IonWriter::create(&mut bytes, write_config())
-        .expect("begin must succeed")
-        .write_mzml(&mzml)
-        .expect("sorted m/z must be accepted");
+    write_via_push(&mzml, &write_config(), &mut bytes).expect("sorted m/z must be accepted");
     assert!(!bytes.is_empty(), "output must be non-empty");
-    let arc: Arc<[u8]> = Arc::from(bytes.as_slice());
-    IonReader::open_source(Arc::new(BytesSource::new(arc)), ReadOptions::default())
+    IonReader::from_bytes(&bytes, &ReadOptions::default())
         .expect("file must open after encoding sorted m/z");
 }
 
@@ -196,18 +242,15 @@ fn read_mz_range_works_on_sorted_spectrum() {
         vec![1.0, 2.0, 3.0],
     )]);
     let mut bytes = Vec::new();
-    IonWriter::create(&mut bytes, write_config())
-        .expect("begin must succeed")
-        .write_mzml(&mzml)
-        .expect("sorted m/z must be accepted");
-    let arc: Arc<[u8]> = Arc::from(bytes.as_slice());
+    write_via_push(&mzml, &write_config(), &mut bytes).expect("sorted m/z must be accepted");
     let mut decoder =
-        IonReader::open_source(Arc::new(BytesSource::new(arc)), ReadOptions::default())
-            .expect("open must succeed");
+        IonReader::from_bytes(&bytes, &ReadOptions::default()).expect("open must succeed");
     decoder.require_bounds().expect("window bounds must exist");
     let window = decoder
-        .read_window(
+        .spectrum_window(
             0,
+            ArrayKind::Mz,
+            ArrayKind::Intensity,
             Range {
                 from: 150.0,
                 to: 250.0,
@@ -231,9 +274,7 @@ fn write_mzml_accepts_equal_adjacent_mz_values() {
         vec![1.0, 2.0, 3.0],
     )]);
     let mut bytes = Vec::new();
-    IonWriter::create(&mut bytes, write_config())
-        .expect("begin must succeed")
-        .write_mzml(&mzml)
+    write_via_push(&mzml, &write_config(), &mut bytes)
         .expect("non-decreasing (equal adjacent values) must be accepted");
     assert!(!bytes.is_empty());
 }

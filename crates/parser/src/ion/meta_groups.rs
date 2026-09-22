@@ -1,4 +1,4 @@
-use crate::ion::{IonError, IonResult};
+use crate::ion::{ByteRange, IonError, IonResult};
 
 pub(crate) const METADATA_GROUP_SIZE: u32 = 8192;
 pub(crate) const META_GROUP_ENTRY_SIZE: usize = 32;
@@ -35,6 +35,28 @@ pub(crate) struct MetaTotals {
     pub(crate) numeric: u64,
     pub(crate) string: u64,
     pub(crate) uncompressed: u64,
+}
+
+pub(crate) struct MetaSection {
+    pub(crate) range: ByteRange,
+    pub(crate) group_count: u64,
+    pub(crate) group_size: u32,
+    pub(crate) item_count: u64,
+    pub(crate) totals: MetaTotals,
+}
+
+pub(crate) fn meta_directory_range(section: ByteRange, group_count: u64) -> IonResult<ByteRange> {
+    let length = group_count
+        .checked_mul(META_GROUP_ENTRY_SIZE as u64)
+        .ok_or_else(|| IonError::from("metadata groups: directory size overflows"))?;
+    let offset = section
+        .length
+        .checked_sub(length)
+        .ok_or_else(|| IonError::from("metadata groups: section smaller than directory"))?;
+    Ok(ByteRange {
+        offset: section.offset + offset,
+        length,
+    })
 }
 
 pub(crate) fn group_count_for(item_count: u64, group_size: u32) -> u64 {
