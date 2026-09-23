@@ -27,18 +27,6 @@ fn sample_mzml() -> MzML {
 }
 
 #[test]
-fn root_read_and_write_round_trip_a_file() {
-    let path = temp_path("read_write.ion");
-    let mzml = sample_mzml();
-
-    ionic::write(&path, &mzml, &WriteOptions::default()).expect("write must succeed");
-    let round_tripped = ionic::read(&path).expect("read must succeed");
-    let _ = std::fs::remove_file(&path);
-
-    assert_eq!(round_tripped.run.spectrum_list.unwrap().spectra.len(), 1);
-}
-
-#[test]
 fn create_write_spectrum_finish_round_trips_and_open_reads_it_back() {
     let path = temp_path("create_push.ion");
     let mz: Vec<f64> = (0..20).map(|i| 200.0 + i as f64).collect();

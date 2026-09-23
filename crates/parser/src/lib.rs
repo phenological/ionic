@@ -6,7 +6,7 @@ pub(crate) mod utilities;
 
 pub use api::{ConvertKind, ConvertOptions, IonReader, IonWriter, ReadOptions, ScanQuery, WriteOptions, convert};
 #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-pub use api::{convert_file, read, write};
+pub use api::convert_file;
 pub use ion::{
     ArrayKind, ChromatogramSummary, DataXY, DecompressionLimit, IonError, IonResult, Range,
     ScanStream, ScanSummary, SectionStorage, Select, SpectrumSummary, TimeUnit, Window,

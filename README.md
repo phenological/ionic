@@ -48,31 +48,30 @@ A command-line tool for converting mzML files to Ionic. See the [CLI](crates/cli
 
 | Item | What it does |
 |---|---|
-| `ionic::read` / `ionic::write` | Whole `.ion` file to/from an `MzML`, in one call. (std) |
 | `ionic::convert` | Convert an in-memory buffer between mzML and Ionic. |
 | `ionic::convert_file` | Convert between two paths, streaming to disk. (std) |
 | `IonReader::open` | Open a `.ion` file by path (memory-mapped). (std) |
 | `IonReader::from_bytes` | Open a `.ion` file already in memory. |
 | `IonReader::new` | Open from any `ionic::source::ReadBytes` (partial/remote reads). |
 | `IonWriter::create` | Write a new `.ion` file by path. (std) |
-| `IonWriter::to` | Write into any `ionic::source::WriteBytes` sink, such as a `Vec<u8>`. |
+| `IonWriter::to` | Write into any `ionic::source::WriteBytes` output, such as a `Vec<u8>`. |
 | `ionic::mzml` | mzML types and parser/serializer: `MzML`, `Spectrum`, `Chromatogram`, `NumericArray`, `parse_mzml`, `bin_to_mzml`, ... |
 | `ionic::source` | Partial/remote-read building blocks: `ReadBytes`, `WriteBytes`, `ByteRange`, `CallbackSource`, `header_ranges`, `merge_ranges`. |
 | `ionic::format` | File-format constants used by tooling: `CURRENT_VERSION`, `HEADER_SIZE`, `FILE_SIGNATURE`, `is_supported`, ... |
 
 "std" means the item needs a real filesystem and is not available on `wasm32-unknown-unknown`; "everywhere" means it also works there.
 
-### Read
+### Reading
 
 ```rust
 use ionic::{ArrayKind, IonReader, ReadOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let options = ReadOptions {
-        parallel: false,
-        ..ReadOptions::default()
-    };
-    let mut reader = IonReader::open("run.ion", &options)?;
+    let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
+
+    let spectrum = reader.spectrum_metadata_at(0)?;
+    println!("{}", spectrum.id);
+
     let mz = reader.spectrum_array(0, ArrayKind::Mz)?;
     let intensity = reader.spectrum_array(0, ArrayKind::Intensity)?;
     println!("{} points", mz.len().min(intensity.len()));
@@ -80,22 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Streaming reader
-
-Read one spectrum at a time. Memory stays small, even for large files.
-
-```rust
-use ionic::{IonReader, ReadOptions};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
-    for index in 0..reader.spectrum_count() as usize {
-        let spectrum = reader.spectrum_metadata_at(index)?;
-        println!("{}", spectrum.id);
-    }
-    Ok(())
-}
-```
+Metadata and arrays are read on demand: one call reads only the blocks it needs, so memory
+stays small even for large files.
 
 `ReadOptions::default()`:
 
@@ -106,11 +91,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `parallel` | `true` |
 | `decompression_limit` | `DecompressionLimit::default()` (2 GiB uncompressed cap) |
 
-### Partial reads — ionic::source
+### Reading bytes
 
 `byte_ranges` and `eic_byte_ranges` turn a query into the exact byte ranges a remote source
-would need to fetch, without reading them; that is what lets a viewer such as
-[ion-beam](https://github.com/phenological/ion-beam) show only the bytes it downloaded.
+would need to fetch, without reading them.
 
 ```rust
 use ionic::{IonReader, Range, ReadOptions};
@@ -125,23 +109,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Write
+### Writing
 
-```rust
-use ionic::WriteOptions;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mzml = ionic::read("run.ion")?;
-    ionic::write("out.ion", &mzml, &WriteOptions::default())?;
-    Ok(())
-}
-```
-
-### Streaming writer
-
-The metadata passed to `create`/`to` holds run-level data only. Add spectra and chromatograms
-with `write_spectrum`/`write_chromatogram`, then call `finish`. `Drop` does not finish the file.
-`write_stream` writes a whole stream and finishes the file in one call.
+Add spectra and chromatograms with `write_spectrum`/`write_chromatogram`, then call `finish` to seal the file (without it the file stays unfinished).
 
 ```rust
 use ionic::{IonWriter, WriteOptions, mzml::parse_mzml};
