@@ -200,12 +200,23 @@ impl MetaGroupReader {
         }
     }
 
-    fn read_group(&self, group_index: u64) -> IonResult<Vec<Metadatum>> {
+    pub(crate) fn item_byte_range(&self, item_index: u64) -> IonResult<ByteRange> {
+        let group_index = group_of_item(item_index, self.section.group_size);
+        let (_, range) = self.group_location(group_index)?;
+        Ok(range)
+    }
+
+    fn group_location(&self, group_index: u64) -> IonResult<(&MetaGroupEntry, ByteRange)> {
         let entry = self
             .directory
             .get(group_index as usize)
             .ok_or_else(|| IonError::from("metadata groups: group index out of range"))?;
-        let payload = self.source.read(self.payload_range(entry)?)?;
+        Ok((entry, self.payload_range(entry)?))
+    }
+
+    fn read_group(&self, group_index: u64) -> IonResult<Vec<Metadatum>> {
+        let (entry, range) = self.group_location(group_index)?;
+        let payload = self.source.read(range)?;
         let bytes = self.decode_payload(entry, &payload)?;
         self.parse_group(&bytes, group_index)
     }

@@ -215,18 +215,28 @@ impl IonReader {
     }
 
     pub fn spectrum_metadata_at(&mut self, index: usize) -> IonResult<Spectrum> {
-        if index >= self.header.spectrum_count as usize {
-            return Err(IonError::OutOfRange {
-                index,
-                count: self.header.spectrum_count,
-            });
-        }
+        self.check_spectrum_index(index)?;
         let rows = self.spectrum_metadata_rows_at(index)?;
         build_one_spectrum(&rows, index).ok_or_else(|| {
             IonError::from(format!(
                 "spectrum {index}: metadata is missing the spectrum tag"
             ))
         })
+    }
+
+    pub fn spectrum_metadata_byte_ranges(&self, index: usize) -> IonResult<Vec<ByteRange>> {
+        self.check_spectrum_index(index)?;
+        Ok(vec![self.spec_meta.item_byte_range(index as u64)?])
+    }
+
+    fn check_spectrum_index(&self, index: usize) -> IonResult<()> {
+        if index >= self.header.spectrum_count as usize {
+            return Err(IonError::OutOfRange {
+                index,
+                count: self.header.spectrum_count,
+            });
+        }
+        Ok(())
     }
 
     pub fn chromatogram_metadata_at(&mut self, index: usize) -> IonResult<Chromatogram> {
