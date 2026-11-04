@@ -1,6 +1,6 @@
 use std::{fs::File, path::Path};
 
-use cosmoz::{DecompressOptions, Decoder};
+use cosmoz::{Decoder, DecompressOptions};
 
 use ionic::format::{
     CODEC_NONE, CODEC_ZSTD, FILE_SIGNATURE, FILE_TRAILER, HEADER_SIZE, is_supported, version_of,
@@ -158,15 +158,8 @@ fn resolve_fixed_sections(bytes: &[u8], header: &[u8], decoder: &mut Decoder) ->
         compressed,
         decoder,
     );
-    let chrom_addresses = read_address_section(
-        bytes,
-        header,
-        144,
-        152,
-        &chrom_entries,
-        compressed,
-        decoder,
-    );
+    let chrom_addresses =
+        read_address_section(bytes, header, 144, 152, &chrom_entries, compressed, decoder);
 
     FixedSections {
         spec_summary,
@@ -689,9 +682,7 @@ fn integrity_check_results(view: &HeaderView<'_>) -> [(&'static str, bool); 23] 
         ("22  E global_meta CRC-32", view.crc_ok(192, 200, 1016)),
         (
             "23  format version supported",
-            version_of(view.bytes)
-                .map(is_supported)
-                .unwrap_or(false),
+            version_of(view.bytes).map(is_supported).unwrap_or(false),
         ),
     ]
 }

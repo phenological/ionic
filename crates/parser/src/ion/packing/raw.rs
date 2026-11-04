@@ -14,12 +14,8 @@ impl Packing for Raw {
 
     fn encode(&self, input: PackingInput<'_>, out: &mut Vec<u8>) -> IonResult<()> {
         match input {
-            PackingInput::F64(values) => {
-                out.extend(values.iter().flat_map(|v| v.to_le_bytes()))
-            }
-            PackingInput::F32(values) => {
-                out.extend(values.iter().flat_map(|v| v.to_le_bytes()))
-            }
+            PackingInput::F64(values) => out.extend(values.iter().flat_map(|v| v.to_le_bytes())),
+            PackingInput::F32(values) => out.extend(values.iter().flat_map(|v| v.to_le_bytes())),
         }
         Ok(())
     }

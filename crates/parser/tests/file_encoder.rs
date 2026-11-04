@@ -122,7 +122,8 @@ fn memory_and_streaming_produce_equivalent_results() {
     .expect("streaming encode");
     let stream_buf = fs::read(&temp_path).expect("read temp file");
 
-    let mut mem_decoder = IonReader::from_bytes(&mem_buf, &ReadOptions::default()).expect("mem decoder");
+    let mut mem_decoder =
+        IonReader::from_bytes(&mem_buf, &ReadOptions::default()).expect("mem decoder");
     let mem_decoded = mem_decoder.to_mzml().expect("mem to_mzml");
 
     let mut stream_decoder =

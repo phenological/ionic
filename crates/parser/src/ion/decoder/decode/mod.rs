@@ -37,7 +37,8 @@ use crate::{
             meta_column_layout::MetaColumnLayout,
             parse_chromatogram, parse_chromatogram_list, parse_chromatogram_list_header,
             parse_cv_and_user_params, parse_cv_list, parse_data_processing_list,
-            parse_file_description, parse_global_metadata::parse_global_metadata,
+            parse_file_description,
+            parse_global_metadata::parse_global_metadata,
             parse_instrument_list, parse_referenceable_param_group_list, parse_sample_list,
             parse_scan_settings_list, parse_software_list, parse_spectrum, parse_spectrum_list,
             parse_spectrum_list_header,
@@ -107,7 +108,14 @@ fn decompress_fixed_section(
     Ok(Arc::from(plain))
 }
 
-type FixedSectionBuffers = (Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>, Arc<[u8]>);
+type FixedSectionBuffers = (
+    Arc<[u8]>,
+    Arc<[u8]>,
+    Arc<[u8]>,
+    Arc<[u8]>,
+    Arc<[u8]>,
+    Arc<[u8]>,
+);
 
 struct FixedSections {
     spec_summary: Arc<[u8]>,
@@ -299,9 +307,9 @@ pub(crate) use arrays::{
     read_array_addresses_from_buffers, unfilter_array_bytes,
 };
 pub use to_mzml::{Metadatum, MetadatumValue};
-pub use windows::{DataXY, ScanQuery, Select, Window};
 #[cfg(test)]
 pub(crate) use windows::ItemKind;
+pub use windows::{DataXY, ScanQuery, Select, Window};
 
 #[derive(Debug, Clone)]
 pub struct ReadOptions {

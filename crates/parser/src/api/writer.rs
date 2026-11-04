@@ -97,7 +97,8 @@ impl<'out> IonWriter<'out> {
     }
 
     pub fn write_chromatogram(&mut self, chromatogram: &Chromatogram) -> IonResult<()> {
-        self.encoder.push_chromatogram(&mut self.output, chromatogram)
+        self.encoder
+            .push_chromatogram(&mut self.output, chromatogram)
     }
 
     pub fn write_stream(mut self, scans: &mut dyn ScanStream) -> IonResult<()> {

@@ -75,7 +75,7 @@ fn update_rejects_encoder_flags() {
 
     for flags in [
         vec!["--mz-window", "50"],
-        vec!["--level", "3"],
+        vec!["--compression-level", "3"],
         vec!["--block-size", "4"],
         vec!["--force-f32"],
         vec!["--storage", "memory"],

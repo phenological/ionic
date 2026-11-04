@@ -615,12 +615,18 @@ impl MetadataWriter for PackedMetaBuilder {
     }
 }
 
-pub(crate) fn compress_bytes_if_enabled(bytes: Vec<u8>, level: u8, encoder: &mut Encoder) -> Vec<u8> {
+pub(crate) fn compress_bytes_if_enabled(
+    bytes: Vec<u8>,
+    level: u8,
+    encoder: &mut Encoder,
+) -> Vec<u8> {
     if level == 0 {
         return bytes;
     }
     let mut out = vec![0u8; encoder.max_compressed_size(bytes.len())];
-    let written = encoder.compress_into(&bytes, &mut out).expect("zstd compression failed");
+    let written = encoder
+        .compress_into(&bytes, &mut out)
+        .expect("zstd compression failed");
     out.truncate(written);
     out
 }

@@ -5,7 +5,9 @@ use std::{fs, path::PathBuf};
 use common::{
     encode_to_ion, parse_test_file, read_test_file, repo_root, test_files::ALL_TEST_FILES,
 };
-use ionic::{ConvertKind, ConvertOptions, IonReader, ReadOptions, format::FILE_SIGNATURE, mzml::bin_to_mzml};
+use ionic::{
+    ConvertKind, ConvertOptions, IonReader, ReadOptions, format::FILE_SIGNATURE, mzml::bin_to_mzml,
+};
 
 const MZML: &str = "crates/parser/data/mzml/tiny.pwiz.1.1.mzML";
 const ION: &str = "crates/parser/data/ion/tiny.msdata.mzML0.99.9.ion";
@@ -129,8 +131,12 @@ fn auto_trusts_the_extension_over_the_file_signature() {
 fn path_input_and_buffer_input_give_the_same_ion_bytes() {
     for relative_path in ALL_TEST_FILES {
         let out = temp_path("path-vs-bytes.ion");
-        ionic::convert_file(fixture_path(relative_path), &out, &ConvertOptions::default())
-            .unwrap();
+        ionic::convert_file(
+            fixture_path(relative_path),
+            &out,
+            &ConvertOptions::default(),
+        )
+        .unwrap();
         let from_path = fs::read(&out).unwrap();
         let _ = fs::remove_file(&out);
         let from_bytes =
@@ -152,10 +158,16 @@ fn mzml_to_ion_refuses_ion_input() {
 
 #[test]
 fn ion_to_mzml_refuses_mzml_input() {
-    let from_bytes = ionic::convert(&read_test_file(MZML), &options_with_kind(ConvertKind::IonToMzml));
+    let from_bytes = ionic::convert(
+        &read_test_file(MZML),
+        &options_with_kind(ConvertKind::IonToMzml),
+    );
     let out = temp_path("refused.mzml");
-    let from_path =
-        ionic::convert_file(fixture_path(MZML), &out, &options_with_kind(ConvertKind::IonToMzml));
+    let from_path = ionic::convert_file(
+        fixture_path(MZML),
+        &out,
+        &options_with_kind(ConvertKind::IonToMzml),
+    );
     assert!(from_bytes.unwrap_err().to_string().contains("header"));
     assert!(from_path.unwrap_err().to_string().contains("header"));
 }

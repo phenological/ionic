@@ -2,7 +2,7 @@
 
 IONIC stores one mass-spectrometry run in one binary file: spectra, chromatograms, and their metadata. It is built to open fast and to read very large files without loading them whole.
 
-This page explains the idea. For the exact byte layout, read the spec for the current version: [`v1.md`](v1.md). Version 0 was the pre-release of the same layout and has no separate file; `v1.md` notes the one difference.
+This page explains the idea. For the exact byte layout, read the spec for the current version: [`v1.md`](v1.md).
 
 ## One file, found through the header
 
@@ -33,7 +33,7 @@ Reading one m/z range across many items goes `A0 → A1 → A3` instead: enter t
 
 A spectrum's arrays are cut into ordered **segments by m/z window**. Segments in the same window are routed to shared blocks across spectra, so an extracted-ion read opens only the blocks whose window overlaps the requested m/z range. **A0** holds, per window, the spectra that store data there and the A3 rows of their m/z and intensity segments, so a reader decodes only the windows that touch the range and skips the rest. The m/z window read is a convenience wrapper over a generic accession-based window read. Small arrays are left whole. The exact bytes are in [`v1.md`](v1.md).
 
-Because finite retention times are stored ascending (the writer rejects a spectrum whose rt drops below the previous one, the same way it rejects unsorted m/z), a window's entry list is also rt-ascending, and a retention-time range is found by binary search. A run in which some spectra have no retention time (SRM, for instance) turns that path off and the reader scans the window's entries instead.
+Retention times and m/z values must be monotonic: equal or increasing values are accepted, and a lower value than the previous one is rejected. This keeps the entries in each window in rt order, so retention-time ranges can be found by binary search.
 
 ## Metadata is columnar
 
@@ -49,6 +49,3 @@ Every value in A1/B1 also lives in C/D under its accession, so A1/B1 can be rebu
 
 Everything else is fixed. Changing any other layout, or the header's reserved area, is a real format change: a new `format_version` and a new spec file.
 
-## What is not allowed to fail quietly
-
-A0/B0 and A3/B3 are required for range and extracted-ion reads, and there is no full-array fallback behind them. If one is missing, fails its CRC, or is structurally wrong, the read is an error rather than a silently narrower answer. Re-encode the file from its mzML source with `ionic convert`.

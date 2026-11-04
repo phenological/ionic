@@ -314,7 +314,7 @@ fn pad_to_alignment(output: &mut dyn WriteBytes) -> IonResult<u64> {
 
 #[cfg(all(test, not(all(target_arch = "wasm32", not(target_os = "wasi")))))]
 mod tests {
-    use cosmoz::{DecompressOptions, Decoder};
+    use cosmoz::{Decoder, DecompressOptions};
 
     use super::*;
 

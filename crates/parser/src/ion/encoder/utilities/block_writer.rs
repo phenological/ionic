@@ -426,7 +426,14 @@ impl<C: BlockCompressor + Send + Sync> BlockWriter<C> {
     where
         WriteAction: FnOnce(&mut Vec<u8>) -> IonResult<()>,
     {
-        self.add_item_to_window(output, array_type, 0, item_byte_size, element_size, write_action)
+        self.add_item_to_window(
+            output,
+            array_type,
+            0,
+            item_byte_size,
+            element_size,
+            write_action,
+        )
     }
 
     pub(crate) fn add_item_to_window<WriteAction>(
@@ -681,7 +688,10 @@ impl<C: BlockCompressor + Send + Sync> BlockWriter<C> {
     }
 
     #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
-    fn write_staged_blocks_in_window_order(&mut self, output: &mut dyn WriteBytes) -> IonResult<()> {
+    fn write_staged_blocks_in_window_order(
+        &mut self,
+        output: &mut dyn WriteBytes,
+    ) -> IonResult<()> {
         let Some(mut staging) = self.staging.take() else {
             return Ok(());
         };

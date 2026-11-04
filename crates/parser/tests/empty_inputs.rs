@@ -186,7 +186,8 @@ fn roundtrip_empty_mzml() {
     )
     .expect("encode should succeed");
 
-    let mut decoder = IonReader::from_bytes(&buf, &ReadOptions::default()).expect("decoder should open");
+    let mut decoder =
+        IonReader::from_bytes(&buf, &ReadOptions::default()).expect("decoder should open");
     let decoded = decoder.to_mzml().expect("to_mzml should succeed");
     assert_eq!(decoded.run.id, "roundtrip-empty");
 }

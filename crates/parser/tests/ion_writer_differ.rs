@@ -3,10 +3,7 @@ mod common;
 use std::path::PathBuf;
 
 use common::{canonical_diff_paths, write_mzml_to_ion};
-use ionic::{
-    IonReader, ReadOptions, SectionStorage, WriteOptions,
-    mzml::parse_mzml::parse_mzml,
-};
+use ionic::{IonReader, ReadOptions, SectionStorage, WriteOptions, mzml::parse_mzml::parse_mzml};
 
 fn decode_ion_bytes(bytes: &[u8]) -> ionic::mzml::structs::MzML {
     let mut ion = IonReader::from_bytes(bytes, &ReadOptions::default()).unwrap();

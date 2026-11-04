@@ -97,11 +97,11 @@ stays small even for large files.
 would need to fetch, without reading them.
 
 ```rust
-use ionic::{IonReader, Range, ReadOptions};
+use ionic::{ByteRangesOptions, IonReader, Range, ReadOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = IonReader::open("run.ion", &ReadOptions::default())?;
-    let ranges = reader.byte_ranges(0, Range { from: 200.0, to: 400.0 })?;
+    let ranges = reader.byte_ranges(0, Range { from: 200.0, to: 400.0 }, &ByteRangesOptions::default())?;
     for range in ranges {
         println!("fetch bytes {}..{}", range.offset, range.offset + range.length);
     }

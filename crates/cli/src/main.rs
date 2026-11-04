@@ -112,7 +112,8 @@ struct ConvertArgs {
     output_path: Option<PathBuf>,
 
     #[arg(
-        long = "level",
+        long = "compression-level",
+        alias = "level",
         conflicts_with = "update",
         default_value_t = 12,
         value_parser = clap::value_parser!(u8).range(0..=22),
@@ -515,7 +516,8 @@ fn write_mzml_as_ion(
         write: options,
         ..Default::default()
     };
-    ionic::convert_file(input_path, temp_output.path(), &convert_options).map_err(|error| error.to_string())?;
+    ionic::convert_file(input_path, temp_output.path(), &convert_options)
+        .map_err(|error| error.to_string())?;
     temp_output.move_to(output_path)
 }
 

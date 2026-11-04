@@ -35,7 +35,8 @@ pub(crate) fn parse_chromatogram_list<P: MetadataPolicy>(
         owner_rows.insert(entry.id, entry);
     }
 
-    let (mut list, chromatogram_ids) = parse_chromatogram_list_header(&owner_rows, children_lookup)?;
+    let (mut list, chromatogram_ids) =
+        parse_chromatogram_list_header(&owner_rows, children_lookup)?;
 
     let mut param_buffer: Vec<&Metadatum> = Vec::new();
 
@@ -76,10 +77,7 @@ pub(crate) fn parse_chromatogram_list_header<'l>(
         count: get_attr_u32(list_rows, ACC_ATTR_COUNT)
             .map(|v| v as usize)
             .or(Some(chromatogram_ids.len())),
-        default_data_processing_ref: get_attr_text(
-            list_rows,
-            ACC_ATTR_DEFAULT_DATA_PROCESSING_REF,
-        ),
+        default_data_processing_ref: get_attr_text(list_rows, ACC_ATTR_DEFAULT_DATA_PROCESSING_REF),
         chromatograms: Vec::new(),
     };
     Some((list, chromatogram_ids))

@@ -8,7 +8,11 @@ use super::{
     reader::IonReader,
 };
 
-fn resolve_kind(wanted: ConvertKind, from_extension: Option<ConvertKind>, is_ion: bool) -> ConvertKind {
+fn resolve_kind(
+    wanted: ConvertKind,
+    from_extension: Option<ConvertKind>,
+    is_ion: bool,
+) -> ConvertKind {
     if wanted != ConvertKind::Auto {
         return wanted;
     }
@@ -46,8 +50,8 @@ pub fn convert_file(
 ) -> IonResult<()> {
     use std::io::Read;
 
-    use crate::mzml::{MzmlReader, structs::MzML};
     use super::writer::IonWriter;
+    use crate::mzml::{MzmlReader, structs::MzML};
 
     let input = input.as_ref();
     let output = output.as_ref();

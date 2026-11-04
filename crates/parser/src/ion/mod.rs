@@ -8,14 +8,14 @@ pub(crate) mod range;
 pub(crate) mod windowing;
 pub use array_kind::ArrayKind;
 pub use filter_summary::{ChromatogramSummary, SpectrumSummary};
-pub use range::{ByteRange, Range};
+pub use range::{ByteRange, ByteRangesOptions, Range};
 pub(crate) mod decoder;
 pub(crate) mod format;
 pub(crate) mod scan;
 pub use scan::{ScanSummary, TimeUnit};
 pub(crate) mod version_generated;
-pub(crate) use decoder::utilities;
 pub use decoder::decode::{DataXY, Select, Window, header_ranges, merge_ranges};
+pub(crate) use decoder::utilities;
 pub use decoder::utilities::{
     byte_source::{CallbackSource, ReadBytes},
     decompression_limit::DecompressionLimit,

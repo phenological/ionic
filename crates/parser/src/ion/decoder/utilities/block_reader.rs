@@ -1,6 +1,6 @@
 use std::{cell::RefCell, sync::Arc};
 
-use cosmoz::{DecompressOptions, Decoder};
+use cosmoz::{Decoder, DecompressOptions};
 
 use crate::ion::{
     ByteRange, IonError, IonResult,
@@ -270,8 +270,7 @@ impl<P: BlockProcessor> BlockReader<P> {
             if !needs_unshuffle {
                 return Ok(payload);
             }
-            let scratch =
-                unshuffle_into_owned(&self.processor, &payload, stride, uncompressed_len);
+            let scratch = unshuffle_into_owned(&self.processor, &payload, stride, uncompressed_len);
             return Ok(SourceBytes::Owned(scratch));
         }
 

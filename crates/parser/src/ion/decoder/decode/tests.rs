@@ -104,7 +104,9 @@ fn spectrum_metadata_at_and_spectrum_array_match_full_conversion() {
     let full = reader.to_mzml().unwrap();
     let full_spectra = full.run.spectrum_list.expect("spectrum list").spectra;
     for (index, full_spectrum) in full_spectra.iter().enumerate() {
-        let lazy = reader.spectrum_metadata_at(index).expect("spectrum present");
+        let lazy = reader
+            .spectrum_metadata_at(index)
+            .expect("spectrum present");
         let mut expected_metadata = full_spectrum.clone();
         drop_binaries(&mut expected_metadata.binary_data_array_list);
         assert!(lazy.binary_data_array_list.is_some());
@@ -128,7 +130,10 @@ fn spectrum_metadata_at_and_spectrum_array_match_full_conversion() {
 }
 
 fn drop_binaries(list: &mut Option<BinaryDataArrayList>) {
-    for array in list.iter_mut().flat_map(|list| &mut list.binary_data_arrays) {
+    for array in list
+        .iter_mut()
+        .flat_map(|list| &mut list.binary_data_arrays)
+    {
         array.binary = None;
     }
 }
@@ -279,9 +284,16 @@ fn scans_in_visits_every_scan_and_matches_spectrum_window() {
     };
     let mut seen: Vec<(usize, Vec<f64>, Vec<f64>)> = Vec::new();
     reader
-        .scans_in(&ScanQuery { mz, select: Select::All, ms_level: None }, |window| {
-            seen.push((window.index, window.mz.to_vec(), window.intensity.to_vec()));
-        })
+        .scans_in(
+            &ScanQuery {
+                mz,
+                select: Select::All,
+                ms_level: None,
+            },
+            |window| {
+                seen.push((window.index, window.mz.to_vec(), window.intensity.to_vec()));
+            },
+        )
         .unwrap();
     assert_eq!(seen.len(), reader.spectrum_count() as usize);
     for (index, mz_values, intensity_values) in &seen {
@@ -303,9 +315,16 @@ fn scans_in_ms_level_filter_selects_only_matching_scans() {
     };
     let mut count = 0usize;
     reader
-        .scans_in(&ScanQuery { mz, select: Select::All, ms_level: Some(1) }, |_window| {
-            count += 1;
-        })
+        .scans_in(
+            &ScanQuery {
+                mz,
+                select: Select::All,
+                ms_level: Some(1),
+            },
+            |_window| {
+                count += 1;
+            },
+        )
         .unwrap();
     let expected = (0..reader.spectrum_count() as usize)
         .filter(|&index| {
@@ -1119,7 +1138,9 @@ fn split_mz_array_roundtrips_through_spectrum_array() {
     let encoded = encode_one_spectrum_windowed(mz.clone(), int.clone(), 10.0);
 
     let mut decoder = IonReader::from_bytes(&encoded, &ReadOptions::default()).unwrap();
-    let mz_out = decoder.spectrum_array(0, crate::accessions::MZ_ARRAY).unwrap();
+    let mz_out = decoder
+        .spectrum_array(0, crate::accessions::MZ_ARRAY)
+        .unwrap();
     assert_eq!(mz_out, mz);
 
     let int_out = decoder
@@ -1223,7 +1244,15 @@ fn spectrum_window_matches_filtered_spectrum_arrays() {
         let y = decoder.spectrum_array(0, y_kind).unwrap();
         for (low, high) in [(103.0, 107.0), (0.2, 0.6), (100.0, 5000.0)] {
             let got = decoder
-                .spectrum_window(0, x_kind, y_kind, Range { from: low, to: high })
+                .spectrum_window(
+                    0,
+                    x_kind,
+                    y_kind,
+                    Range {
+                        from: low,
+                        to: high,
+                    },
+                )
                 .unwrap();
             let (expected_x, expected_y) = brute_force_window(&x, &y, low, high);
             assert_eq!(got.x.to_f64(), expected_x, "x {x_kind} for [{low}, {high}]");
@@ -1692,7 +1721,8 @@ fn ensure_chrom_window_directory_distinguishes_missing_from_bad_checksum() {
     );
 
     let spectrum_only = encode_one_spectrum_windowed(vec![100.0, 200.0], vec![1.0, 2.0], 10.0);
-    let mut missing_decoder = IonReader::from_bytes(&spectrum_only, &ReadOptions::default()).unwrap();
+    let mut missing_decoder =
+        IonReader::from_bytes(&spectrum_only, &ReadOptions::default()).unwrap();
     missing_decoder.ensure_chrom_window_directory();
 
     assert!(
@@ -1991,6 +2021,7 @@ fn plan_mz_range_returns_mz_and_intensity_blocks() {
                 from: 120.0,
                 to: 130.0,
             },
+            &Default::default(),
         )
         .unwrap();
 
@@ -2027,6 +2058,7 @@ fn plan_and_read_mz_range_use_same_segments() {
                 from: 120.0,
                 to: 130.0,
             },
+            &Default::default(),
         )
         .unwrap();
 
@@ -2185,7 +2217,10 @@ fn eic_plan_covers_per_spectrum_plans() {
     assert!(!planned.is_empty());
 
     for scan_index in 0..rts.len() {
-        for range in reader.byte_ranges(scan_index, mz).unwrap() {
+        for range in reader
+            .byte_ranges(scan_index, mz, &Default::default())
+            .unwrap()
+        {
             let range_end = range.offset + range.length;
             let covered = planned
                 .iter()
@@ -2600,7 +2635,8 @@ fn open_reads_only_planned_ranges() {
         assert!(
             planned
                 .iter()
-                .any(|p| p.offset <= range.offset && range.offset + range.length <= p.offset + p.length),
+                .any(|p| p.offset <= range.offset
+                    && range.offset + range.length <= p.offset + p.length),
             "{range:?} not planned"
         );
     }
@@ -2635,6 +2671,7 @@ fn reader_plans_and_reads_mz_range() {
                 from: 120.0,
                 to: 130.0,
             },
+            &Default::default(),
         )
         .unwrap();
     assert!(!plan.is_empty());

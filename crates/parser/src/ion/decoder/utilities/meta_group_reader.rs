@@ -251,8 +251,11 @@ impl MetaGroupReader {
 
     fn parse_group(&self, bytes: &[u8], group_index: u64) -> IonResult<Vec<Metadatum>> {
         let (meta_count, numeric_count, string_count) = read_group_header(bytes)?;
-        let (item_start, item_end) =
-            item_range_of_group(group_index, self.section.group_size, self.section.item_count);
+        let (item_start, item_end) = item_range_of_group(
+            group_index,
+            self.section.group_size,
+            self.section.item_count,
+        );
         let mut rows = parse_metadata(
             &bytes[META_GROUP_HEADER_SIZE..],
             item_end - item_start,
@@ -298,9 +301,7 @@ mod tests {
         ByteRange, DecompressionLimit, IonResult,
         decoder::{
             decode::ReadOptions,
-            utilities::{
-                byte_source::BytesSource, meta_column_layout::MetaColumnLayout,
-            },
+            utilities::{byte_source::BytesSource, meta_column_layout::MetaColumnLayout},
         },
         format::CODEC_NONE,
         meta_groups::{MetaSection, MetaTotals},

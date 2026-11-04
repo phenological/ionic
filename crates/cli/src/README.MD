@@ -65,7 +65,7 @@ the relative folder structure under `--output-path`.
   - Output directory root (subfolders are created). Required for every mode except
     `--update`, where omitting it updates each file in place.
 
-- `--level <0..22>`
+- `--compression-level <0..22>`
   - zstd compression level for the data blocks. `0` disables compression.
     Default: `12`.
 
@@ -126,7 +126,7 @@ You may pass **at most one** of the following. If you don't pass any, the defaul
     current version is reported as skipped. A file with an unsupported version, a bad
     signature, or a header crc32 that does not verify is reported as an error and left
     untouched.
-  - The encoder flags (`--level`, `--mz-window`, `--block-size`, `--storage`,
+  - The encoder flags (`--compression-level`, `--mz-window`, `--block-size`, `--storage`,
     `--force-f32`) are rejected together with `--update`. To change how a file is
     encoded, convert it again from its mzML source.
   - Each file keeps its name. Without `--output-path`, the header is patched in place
@@ -153,7 +153,7 @@ You may pass **at most one** of the following:
 
 Defaults:
 
-- `--level 12`, `--mz-window 250`, `--block-size 8`, `--storage disk`
+- `--compression-level 12`, `--mz-window 250`, `--block-size 8`, `--storage disk`
 
 Run (defaults):
 
@@ -170,7 +170,7 @@ ionic convert --mzml-to-ion --input-path crates/parser/data/mzml --output-path c
 Custom compression level and m/z window:
 
 ```bash
-ionic convert --mzml-to-ion -i crates/parser/data/mzml -o crates/parser/data/ion --level 22 --mz-window 100
+ionic convert --mzml-to-ion -i crates/parser/data/mzml -o crates/parser/data/ion --compression-level 22 --mz-window 100
 ```
 
 A single file:

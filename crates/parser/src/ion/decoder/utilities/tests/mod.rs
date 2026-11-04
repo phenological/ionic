@@ -1,6 +1,6 @@
+mod header_parse;
 mod meta;
 mod parse_binary_array_list;
-mod header_parse;
 mod parse_scan_list;
 
 mod parse_precursor_list;

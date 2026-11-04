@@ -76,10 +76,7 @@ pub(crate) fn parse_spectrum_list_header<'l>(
         count: get_attr_u32(list_rows, ACC_ATTR_COUNT)
             .map(|v| v as usize)
             .or(Some(spectrum_ids.len())),
-        default_data_processing_ref: get_attr_text(
-            list_rows,
-            ACC_ATTR_DEFAULT_DATA_PROCESSING_REF,
-        ),
+        default_data_processing_ref: get_attr_text(list_rows, ACC_ATTR_DEFAULT_DATA_PROCESSING_REF),
         spectra: Vec::new(),
     };
     Some((list, spectrum_ids))

@@ -1,4 +1,4 @@
-use cosmoz::{DecompressOptions, Decoder, compressed_size};
+use cosmoz::{Decoder, DecompressOptions, compressed_size};
 
 use crate::ion::{
     IonError, IonResult,

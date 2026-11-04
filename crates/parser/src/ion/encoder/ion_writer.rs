@@ -503,7 +503,11 @@ impl IonEncoder {
     }
 
     fn set_metadata(&mut self, metadata: &MzML) {
-        self.spec_schema = metadata.run.spectrum_list.as_ref().map(schema_of_spectrum_list);
+        self.spec_schema = metadata
+            .run
+            .spectrum_list
+            .as_ref()
+            .map(schema_of_spectrum_list);
         self.chrom_schema = metadata
             .run
             .chromatogram_list
@@ -624,8 +628,11 @@ impl IonEncoder {
         let (global_meta, global_counts) = self.collector.collect_global_meta(mzml);
         let raw_global = serialize_global_meta_with_counts(&global_counts, &global_meta)?;
         let global_uncompressed = raw_global.len() as u64;
-        let global_bytes =
-            compress_bytes_if_enabled(raw_global, self.config.compression_level, &mut self.compressor);
+        let global_bytes = compress_bytes_if_enabled(
+            raw_global,
+            self.config.compression_level,
+            &mut self.compressor,
+        );
 
         let spec = std::mem::replace(
             &mut self.spec_stream,
@@ -883,15 +890,20 @@ mod tests {
 
         writer.finish(&mut output, &MzML::default()).unwrap();
 
-        let mut reader =
-            IonReader::from_bytes(&output, &crate::ion::decoder::decode::ReadOptions::default())
-                .unwrap();
+        let mut reader = IonReader::from_bytes(
+            &output,
+            &crate::ion::decoder::decode::ReadOptions::default(),
+        )
+        .unwrap();
         assert_eq!(reader.spectrum_count(), spectrum_count as u64);
         for i in [0usize, spectrum_count / 2, spectrum_count - 1] {
             let spectrum = reader.spectrum_metadata_at(i).unwrap();
             let mz = reader.spectrum_array(i, crate::ion::ArrayKind::Mz).unwrap();
             assert_eq!(spectrum.index, Some(i as u32));
-            assert_eq!(mz, vec![100.0 + i as f64, 101.0 + i as f64, 102.0 + i as f64]);
+            assert_eq!(
+                mz,
+                vec![100.0 + i as f64, 101.0 + i as f64, 102.0 + i as f64]
+            );
         }
     }
 }

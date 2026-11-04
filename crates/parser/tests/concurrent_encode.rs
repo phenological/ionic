@@ -61,9 +61,10 @@ fn every_concurrently_encoded_file_keeps_its_spectrum_bounds() {
         .spectrum_count();
 
     for (thread_index, bytes) in encode_on_threads(source, THREADS).into_iter().enumerate() {
-        let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap_or_else(|error| {
-            panic!("thread {thread_index} wrote an unreadable file: {error}")
-        });
+        let mut reader =
+            IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap_or_else(|error| {
+                panic!("thread {thread_index} wrote an unreadable file: {error}")
+            });
         assert_eq!(
             reader.spectrum_count(),
             expected_count,

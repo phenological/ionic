@@ -143,7 +143,10 @@ fn encode_user_param_with_value_uses_separator() {
 fn compress_bytes_if_enabled_level_zero_is_identity() {
     let input = vec![1u8, 2, 3, 4];
     let mut encoder = new_meta_encoder(0).unwrap();
-    assert_eq!(compress_bytes_if_enabled(input.clone(), 0, &mut encoder), input);
+    assert_eq!(
+        compress_bytes_if_enabled(input.clone(), 0, &mut encoder),
+        input
+    );
 }
 
 #[test]

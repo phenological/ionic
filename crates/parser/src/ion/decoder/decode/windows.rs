@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
-    accessions::MZ_ARRAY,
-    ion::{ArrayKind, decoder::utilities::window_directory::WindowEntry, windowing::window_index},
+    accessions::{INTENSITY_ARRAY, MZ_ARRAY},
+    ion::{
+        ArrayKind, ByteRangesOptions, decoder::utilities::window_directory::WindowEntry,
+        windowing::window_index,
+    },
 };
 
 fn window_span(width: f64, from: f64, to: f64, window_count: usize) -> Option<(usize, usize)> {
@@ -252,6 +255,7 @@ impl IonReader {
         Ok(rows)
     }
 
+    #[cfg(test)]
     pub(crate) fn get_spectrum_mz_windows(
         &mut self,
         scan_index: usize,
@@ -358,13 +362,18 @@ impl IonReader {
         Ok(ranges)
     }
 
-    pub fn byte_ranges(&mut self, scan_index: usize, mz: Range) -> IonResult<Vec<ByteRange>> {
-        let windows = self.get_spectrum_mz_windows(scan_index, mz.from, mz.to)?;
+    pub fn byte_ranges(
+        &mut self,
+        scan_index: usize,
+        mz: Range,
+        options: &ByteRangesOptions,
+    ) -> IonResult<Vec<ByteRange>> {
+        self.check_window(scan_index, mz)?;
+        let rows = self.window_rows(scan_index, mz)?;
 
-        let mut block_ids = Vec::with_capacity(windows.len() * 2);
-        for window in &windows {
-            block_ids.push(window.mz_address.block_id);
-            block_ids.push(window.y_address.block_id);
+        let mut block_ids = Vec::new();
+        for &array_type in &options.arrays {
+            self.add_block_ids(scan_index, array_type, &rows, &mut block_ids)?;
         }
         block_ids.sort_unstable();
         block_ids.dedup();
@@ -375,6 +384,51 @@ impl IonReader {
         }
         ranges.sort_unstable_by_key(|range| (range.offset, range.length));
         Ok(ranges)
+    }
+
+    fn add_block_ids(
+        &self,
+        scan_index: usize,
+        array_type: u32,
+        rows: &[WindowEntry],
+        block_ids: &mut Vec<u32>,
+    ) -> IonResult<()> {
+        if array_type == MZ_ARRAY {
+            return self.add_window_block_ids(rows, |row| row.mz_address, block_ids);
+        }
+        if array_type == INTENSITY_ARRAY {
+            return self.add_window_block_ids(rows, |row| row.intensity_address, block_ids);
+        }
+        if let Some(shift) = self.y_shift(scan_index, array_type) {
+            return self.add_window_block_ids(
+                rows,
+                |row| row.mz_address.wrapping_add_signed(shift),
+                block_ids,
+            );
+        }
+        let Some(addresses) = read_array_addresses_from_buffers(
+            &self.spec_entries_buf,
+            &self.spec_array_addresses,
+            scan_index,
+        ) else {
+            return Ok(());
+        };
+        if let Some((_, run)) = array_run(addresses.as_slice(), array_type) {
+            block_ids.extend(run.iter().map(|address| address.block_id));
+        }
+        Ok(())
+    }
+
+    fn add_window_block_ids(
+        &self,
+        rows: &[WindowEntry],
+        address_of: impl Fn(&WindowEntry) -> u32,
+        block_ids: &mut Vec<u32>,
+    ) -> IonResult<()> {
+        for row in rows {
+            block_ids.push(self.array_address_at(address_of(row))?.block_id);
+        }
+        Ok(())
     }
 
     pub fn spectrum_window(
@@ -496,11 +550,7 @@ impl IonReader {
         Ok(values)
     }
 
-    pub fn scans_in(
-        &mut self,
-        query: &ScanQuery,
-        mut visit: impl FnMut(&Window),
-    ) -> IonResult<()> {
+    pub fn scans_in(&mut self, query: &ScanQuery, mut visit: impl FnMut(&Window)) -> IonResult<()> {
         self.require_bounds()?;
         let count = self.header.spectrum_count as usize;
         let mut mz_out: Vec<f64> = Vec::new();

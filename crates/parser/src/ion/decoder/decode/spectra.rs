@@ -255,4 +255,3 @@ impl IonReader {
         self.chrom_meta.read_all()
     }
 }
-

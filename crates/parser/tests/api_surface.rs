@@ -7,8 +7,7 @@ use ionic::{
     ArrayKind, ChromatogramSummary, ConvertKind, ConvertOptions, DataXY, DecompressionLimit,
     IonError, IonReader, IonResult, IonWriter, Metadatum, MetadatumValue, Range, ReadOptions,
     ScanQuery, ScanStream, ScanSummary, SectionStorage, Select, SpectrumSummary, TimeUnit, Window,
-    WriteOptions,
-    mzml::structs::MzML,
+    WriteOptions, mzml::structs::MzML,
 };
 
 fn temp_path(name: &str) -> PathBuf {
@@ -66,7 +65,9 @@ fn spectrum_array_into_reuses_the_callers_buffer() {
     let mut reader = IonReader::from_bytes(&bytes, &ReadOptions::default()).unwrap();
     let mut buf = Vec::with_capacity(4096);
     let addr_before = buf.as_ptr();
-    reader.spectrum_array_into(0, ArrayKind::Mz, &mut buf).unwrap();
+    reader
+        .spectrum_array_into(0, ArrayKind::Mz, &mut buf)
+        .unwrap();
 
     assert_eq!(buf, mz);
     assert_eq!(

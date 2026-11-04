@@ -601,7 +601,9 @@ pub(crate) fn encode_single_array(
         packing,
     } = encoding;
     let (block_id, element_offset, encoded_len) = if packing.is_variable_length() {
-        encode_variable_length_array(output, accession, data, dtype, dtype_enum, packing, container)?
+        encode_variable_length_array(
+            output, accession, data, dtype, dtype_enum, packing, container,
+        )?
     } else {
         encode_fixed_length_array(
             output, accession, data, dtype, dtype_enum, elem_bytes, packing, container,

@@ -277,7 +277,13 @@ pub(crate) fn decode_into(
     match dtype {
         FILE_DTYPE_F64 => {
             buf.reserve(bytes.len() / 8);
-            buf.extend(bytes.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)));
+            buf.extend(
+                bytes
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| f64::from_le_bytes(*c)),
+            );
         }
         FILE_DTYPE_F32 => {
             buf.reserve(bytes.len() / 4);
@@ -382,7 +388,10 @@ impl IonReader {
         decode_into(out, raw, array_address.dtype, array_address.array_filter)
     }
 
-    pub(crate) fn read_spectrum_array(&mut self, array_address: &ArrayAddress) -> IonResult<NumericArray> {
+    pub(crate) fn read_spectrum_array(
+        &mut self,
+        array_address: &ArrayAddress,
+    ) -> IonResult<NumericArray> {
         let (element_offset, count, stride) = address_read_params(array_address);
         let raw = self.spec_container.get_array_bytes_from_block(
             array_address.block_id,
@@ -886,15 +895,21 @@ mod tests {
                         .any(|p| p.accession.as_deref() == Some(accession))
                 })
                 .expect("array with accession present");
-            bda.binary.as_ref().expect("binary payload present").to_f64()
+            bda.binary
+                .as_ref()
+                .expect("binary payload present")
+                .to_f64()
         }
 
         #[test]
         fn roundtrip_f64_array() {
             let values = vec![1.0_f64, -2.5, 0.0, f64::MAX, f64::MIN, std::f64::consts::PI];
             let len = values.len();
-            let mzml =
-                mzml_with_single_array(NumericType::Float64, NumericArray::F64(values.clone()), len);
+            let mzml = mzml_with_single_array(
+                NumericType::Float64,
+                NumericArray::F64(values.clone()),
+                len,
+            );
             let out = roundtrip(&mzml);
             let bin = first_spectrum_binary(&out).expect("should have binary data");
             let got = bin.to_f64();
@@ -905,8 +920,11 @@ mod tests {
         fn roundtrip_f32_array() {
             let values = vec![1.0_f32, -2.5, 0.0, f32::MAX, f32::MIN, std::f32::consts::PI];
             let len = values.len();
-            let mzml =
-                mzml_with_single_array(NumericType::Float32, NumericArray::F32(values.clone()), len);
+            let mzml = mzml_with_single_array(
+                NumericType::Float32,
+                NumericArray::F32(values.clone()),
+                len,
+            );
             let out = roundtrip(&mzml);
             let bin = first_spectrum_binary(&out).expect("should have binary data");
             let got = bin.to_f64();
@@ -922,13 +940,19 @@ mod tests {
 
             let f32_values = vec![10.0_f32, 11.0, 12.0, 13.0];
             let f32_len = f32_values.len();
-            let f32_mzml =
-                mzml_with_single_array(NumericType::Float32, NumericArray::F32(f32_values), f32_len);
+            let f32_mzml = mzml_with_single_array(
+                NumericType::Float32,
+                NumericArray::F32(f32_values),
+                f32_len,
+            );
 
             let f64_values = vec![100.0_f64, 100.5, 101.0, 101.5];
             let f64_len = f64_values.len();
-            let f64_mzml =
-                mzml_with_single_array(NumericType::Float64, NumericArray::F64(f64_values), f64_len);
+            let f64_mzml = mzml_with_single_array(
+                NumericType::Float64,
+                NumericArray::F64(f64_values),
+                f64_len,
+            );
 
             let f32_bytes = encode_to_ion(&f32_mzml, 9, false);
             let f32_decoder =
@@ -1042,8 +1066,11 @@ mod tests {
         fn roundtrip_at_compression_levels() {
             let values = vec![100.0_f64, 200.0, 300.0, 400.0, 500.0];
             let len = values.len();
-            let mzml =
-                mzml_with_single_array(NumericType::Float64, NumericArray::F64(values.clone()), len);
+            let mzml = mzml_with_single_array(
+                NumericType::Float64,
+                NumericArray::F64(values.clone()),
+                len,
+            );
 
             for level in [0, 3, 10, 22] {
                 let mut buf = Vec::new();
@@ -1075,8 +1102,11 @@ mod tests {
         fn roundtrip_force_f32_downcasts() {
             let values = vec![100.0_f64, 200.0, 300.0];
             let len = values.len();
-            let mzml =
-                mzml_with_single_array(NumericType::Float64, NumericArray::F64(values.clone()), len);
+            let mzml = mzml_with_single_array(
+                NumericType::Float64,
+                NumericArray::F64(values.clone()),
+                len,
+            );
 
             let mut buf = Vec::new();
             write_mzml_to_ion(
@@ -1229,8 +1259,11 @@ mod tests {
         fn format_version_always_matches_current() {
             let values = vec![1.0_f64, 2.0, 3.0, 4.0, 5.0];
             let len = values.len();
-            let mzml =
-                mzml_with_single_array(NumericType::Float64, NumericArray::F64(values.clone()), len);
+            let mzml = mzml_with_single_array(
+                NumericType::Float64,
+                NumericArray::F64(values.clone()),
+                len,
+            );
             for level in [0u8, 3, 22] {
                 let buf = encode_to_ion(&mzml, level, false);
                 let format_version = u16::from_le_bytes(
